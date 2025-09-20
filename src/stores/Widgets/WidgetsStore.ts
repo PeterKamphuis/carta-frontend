@@ -2,13 +2,14 @@ import {Classes} from "@blueprintjs/core";
 import classNames from "classnames";
 import * as GoldenLayout from "golden-layout";
 import $ from "jquery";
-import {action, computed, makeObservable, observable} from "mobx";
+import {action, computed, makeObservable, observable, reaction} from "mobx";
 
 import {
     AnimatorComponent,
     CatalogOverlayComponent,
     CatalogOverlayPlotSettingsPanelComponent,
     CatalogPlotComponent,
+    ChannelMapControlComponent,
     CursorInfoComponent,
     HistogramComponent,
     HistogramSettingsPanelComponent,
@@ -68,7 +69,8 @@ export enum WidgetType {
     Catalog = "Catalog Widget",
     SpectralLineQuery = "Spectral Line Query Widget",
     CursorInfo = "Cursor Info Widget",
-    PvGenerator = "PV Generator"
+    PvGenerator = "PV Generator",
+    ChannelMapControl = "Channel Map Control"
 }
 
 export interface DefaultWidgetConfig {
@@ -162,6 +164,7 @@ export class WidgetsStore {
     @observable logWidgets: Map<string, EmptyWidgetStore>;
     @observable regionListWidgets: Map<string, EmptyWidgetStore>;
     @observable animatorWidgets: Map<string, EmptyWidgetStore>;
+    @observable channelMapControlWidgets: Map<string, EmptyWidgetStore>;
     @observable stokesAnalysisWidgets: Map<string, StokesAnalysisWidgetStore>;
     @observable floatingSettingsWidgets: Map<string, string>;
     @observable catalogWidgets: Map<string, CatalogWidgetStore>;
@@ -227,6 +230,15 @@ export class WidgetsStore {
                 icon: "video",
                 onClick: () => WidgetsStore.Instance.createFloatingAnimatorWidget(),
                 widgetConfig: AnimatorComponent.WIDGET_CONFIG
+            }
+        ],
+        [
+            WidgetType.ChannelMapControl,
+            {
+                isCustomIcon: false,
+                icon: "heat-grid",
+                onClick: () => WidgetsStore.Instance.createFloatingChannelMapControlWidget(),
+                widgetConfig: ChannelMapControlComponent.WIDGET_CONFIG
             }
         ],
         [
@@ -360,6 +372,7 @@ export class WidgetsStore {
         this.histogramWidgets = new Map<string, HistogramWidgetStore>();
         this.renderConfigWidgets = new Map<string, RenderConfigWidgetStore>();
         this.animatorWidgets = new Map<string, EmptyWidgetStore>();
+        this.channelMapControlWidgets = new Map<string, EmptyWidgetStore>();
         this.layerListWidgets = new Map<string, LayerListWidgetStore>();
         this.logWidgets = new Map<string, EmptyWidgetStore>();
         this.regionListWidgets = new Map<string, EmptyWidgetStore>();
@@ -378,6 +391,7 @@ export class WidgetsStore {
             [HistogramComponent.WIDGET_CONFIG.type, this.histogramWidgets],
             [RenderConfigComponent.WIDGET_CONFIG.type, this.renderConfigWidgets],
             [AnimatorComponent.WIDGET_CONFIG.type, this.animatorWidgets],
+            [ChannelMapControlComponent.WIDGET_CONFIG.type, this.channelMapControlWidgets],
             [LayerListComponent.WIDGET_CONFIG.type, this.layerListWidgets],
             [LogComponent.WIDGET_CONFIG.type, this.logWidgets],
             [RegionListComponent.WIDGET_CONFIG.type, this.regionListWidgets],
@@ -391,6 +405,8 @@ export class WidgetsStore {
 
         this.floatingWidgets = [];
         this.defaultFloatingWidgetOffset = 100;
+
+        reaction(() => this.imageViewWidgetTitle, this.updateImageWidgetTitle);
     }
 
     private static GetDefaultWidgetConfig(type: string): DefaultWidgetConfig {
@@ -405,6 +421,8 @@ export class WidgetsStore {
                 return LogComponent.WIDGET_CONFIG;
             case AnimatorComponent.WIDGET_CONFIG.type:
                 return AnimatorComponent.WIDGET_CONFIG;
+            case ChannelMapControlComponent.WIDGET_CONFIG.type:
+                return ChannelMapControlComponent.WIDGET_CONFIG;
             case SpatialProfilerComponent.WIDGET_CONFIG.type:
                 return SpatialProfilerComponent.WIDGET_CONFIG;
             case SpectralProfilerComponent.WIDGET_CONFIG.type:
@@ -562,6 +580,9 @@ export class WidgetsStore {
             case AnimatorComponent.WIDGET_CONFIG.type:
                 itemId = this.addAnimatorWidget();
                 break;
+            case ChannelMapControlComponent.WIDGET_CONFIG.type:
+                itemId = this.addAnimatorWidget();
+                break;
             case LayerListComponent.WIDGET_CONFIG.type:
                 itemId = this.addLayerListWidget();
                 break;
@@ -690,6 +711,7 @@ export class WidgetsStore {
         layout.registerComponent("pv-preview", PvPreviewComponent);
         layout.registerComponent("log", LogComponent);
         layout.registerComponent("animator", AnimatorComponent);
+        layout.registerComponent("channel-map-control", ChannelMapControlComponent);
         layout.registerComponent("stokes", StokesAnalysisComponent);
         layout.registerComponent("catalog-overlay", CatalogOverlayComponent);
         layout.registerComponent("catalog-plot", CatalogPlotComponent);
@@ -708,9 +730,10 @@ export class WidgetsStore {
             const cogPinedButton = this.getControlButton("lm_settings", "settings", "cog").on("click", ev => WidgetsStore.Instance.onCogPinedClick(stack.getActiveContentItem()));
             const nextPageButton = this.getControlButton("lm-image-panel-next", "next image", "step-forward").on("click", this.onNextPageClick);
             const imagePanelButton = this.getControlButton("lm-image-panel", "switch to multi-panel", "square").on("click", this.onImagePanelButtonClick);
+            const channelMapButton = this.getControlButton("lm-channel-map-panel", "enable/disable channel map", "heat-grid").on("click", this.onChannelMapButtonClick);
             this.updateImagePanelButton();
             const previousPageButton = this.getControlButton("lm-image-panel-previous", "previous image", "step-backward").on("click", this.onPreviousPageClick);
-            stack.header.controlsContainer.prepend([previousPageButton, imagePanelButton, nextPageButton, cogPinedButton, helpButton, unpinButton]);
+            stack.header.controlsContainer.prepend([channelMapButton, previousPageButton, imagePanelButton, nextPageButton, cogPinedButton, helpButton, unpinButton]);
 
             stack.on("activeContentItemChanged", (contentItem: any) => {
                 if (stack && stack.config && stack.header.controlsContainer && stack.config.content.length) {
@@ -730,7 +753,7 @@ export class WidgetsStore {
 
                     // show/hide image panel buttons
                     $(stackHeaderControlButtons)
-                        ?.find("li.lm-image-panel-next, li.lm-image-panel, li.lm-image-panel-previous")
+                        ?.find("li.lm-image-panel-next, li.lm-image-panel, li.lm-image-panel-previous, li.lm-channel-map-panel")
                         ?.attr("style", component === "image-view" ? "" : "display:none;");
 
                     // disable unpin button when active tab is image-view
@@ -756,6 +779,8 @@ export class WidgetsStore {
                             ?.find("li.lm_settings")
                             ?.attr("data-testid", config.id + "-header-settings-button");
                     }
+
+                    this.updateRenderConfigSettingsVisibility();
                 }
             });
         });
@@ -898,15 +923,31 @@ export class WidgetsStore {
             if (catalogPlotWidgetStore) {
                 HelpStore.Instance.showHelpDrawer(catalogPlotWidgetStore.plotType === CatalogPlotType.Histogram ? HelpType.CATALOG_HISTOGRAM_PLOT : HelpType.CATALOG_SCATTER_PLOT, centerX);
             }
+
+            const renderConfigWidgetStore = this.renderConfigWidgets.get(id);
+            if (renderConfigWidgetStore) {
+                HelpStore.Instance.showHelpDrawer(AppStore.Instance.activeImage?.type === ImageType.COLOR_BLENDING ? HelpType.RENDER_CONFIG_COLOR_BLENDING : HelpType.RENDER_CONFIG, centerX);
+            }
         }
     };
 
     onImagePanelButtonClick = () => {
-        this.setImageMultiPanelEnabled(!PreferenceStore.Instance.imageMultiPanelEnabled);
+        const channelMapStore = AppStore.Instance.channelMapStore;
+        if (channelMapStore.channelMapEnabled) {
+            channelMapStore.setChannelMapEnabled(false);
+        } else {
+            this.setImageMultiPanelEnabled(!PreferenceStore.Instance.imageMultiPanelEnabled);
+        }
+    };
+
+    onChannelMapButtonClick = () => {
+        const channelMapStore = AppStore.Instance.channelMapStore;
+        channelMapStore.setChannelMapEnabled(!channelMapStore.channelMapEnabled);
     };
 
     setImageMultiPanelEnabled = (multiPanelEnabled: boolean) => {
-        PreferenceStore.Instance.setPreference(PreferenceKeys.IMAGE_MULTI_PANEL_ENABLED, multiPanelEnabled);
+        const preferenceStore = PreferenceStore.Instance;
+        preferenceStore.setPreference(PreferenceKeys.IMAGE_MULTI_PANEL_ENABLED, multiPanelEnabled);
         this.updateImagePanelButton();
     };
 
@@ -958,6 +999,18 @@ export class WidgetsStore {
         if (previousPageButton) {
             previousPageButton.attr("style", config.currentImagePage > 0 ? "" : "cursor: not-allowed; opacity: 0.2");
             previousPageButton.attr("title", config.imagePanelMode === ImagePanelMode.None ? "previous image" : "previous page");
+        }
+    };
+
+    /** Hides the settings buttons of docked render config widgets when color blending images are active. */
+    updateRenderConfigSettingsVisibility = () => {
+        const isBlending = AppStore.Instance.activeImage?.type === ImageType.COLOR_BLENDING;
+        const layout = AppStore.Instance.layoutStore?.dockedLayout;
+        const renderConfigWidgets = layout?.root?.getItemsByFilter((item: any) => item.config.component === RenderConfigComponent.WIDGET_CONFIG.type && !item.container.isHidden) ?? [];
+        for (const widget of renderConfigWidgets) {
+            $(widget.parent.element)
+                ?.find("li.lm_settings")
+                ?.attr("style", isBlending ? "display:none;" : "");
         }
     };
 
@@ -1023,14 +1076,25 @@ export class WidgetsStore {
 
     // endregion
 
-    @action updateImageWidgetTitle(layout: GoldenLayout) {
+    /** The title of the image view widget, which is the file name of the active image. If the active image is a PV preview, the title is the file name of the first image on the page. */
+    @computed get imageViewWidgetTitle() {
         const activeImage = AppStore.Instance.activeImage;
+        const visibleImages = AppStore.Instance.imageViewConfigStore.visibleImages;
+        const titleImage = activeImage?.type !== ImageType.PV_PREVIEW && visibleImages.includes(activeImage) ? activeImage : visibleImages[0];
+
         let newTitle;
-        if (activeImage && activeImage.type !== ImageType.PV_PREVIEW) {
-            newTitle = activeImage?.store?.filename ?? "";
+        if (titleImage) {
+            newTitle = titleImage?.store?.filename ?? "";
         } else {
             newTitle = "No image loaded";
         }
+        return newTitle;
+    }
+
+    /** Updates the title of the image view widget using {@link imageViewWidgetTitle}. */
+    @action updateImageWidgetTitle = () => {
+        const layout = LayoutStore.Instance.dockedLayout;
+        const newTitle = this.imageViewWidgetTitle;
 
         // Update GL title by searching for image-view components
         if (layout?.root) {
@@ -1047,7 +1111,7 @@ export class WidgetsStore {
         if (imageViewWidget && imageViewWidget.title !== newTitle) {
             this.setWidgetTitle(imageViewWidget.id, newTitle);
         }
-    }
+    };
 
     @action setWidgetTitle(id: string, title: string) {
         const layoutStore = LayoutStore.Instance;
@@ -1444,6 +1508,24 @@ export class WidgetsStore {
 
         if (id) {
             this.animatorWidgets.set(id, new EmptyWidgetStore());
+        }
+        return id;
+    }
+
+    createFloatingChannelMapControlWidget = () => {
+        const id = this.addChannelMapControlWidget();
+        if (id !== null) {
+            this.addFloatingWidget(new WidgetConfig(id, ChannelMapControlComponent.WIDGET_CONFIG));
+        }
+    };
+
+    @action addChannelMapControlWidget(id: string | null = null) {
+        if (!id) {
+            id = this.getNextId(ChannelMapControlComponent.WIDGET_CONFIG.type);
+        }
+
+        if (id) {
+            this.channelMapControlWidgets.set(id, new EmptyWidgetStore());
         }
         return id;
     }

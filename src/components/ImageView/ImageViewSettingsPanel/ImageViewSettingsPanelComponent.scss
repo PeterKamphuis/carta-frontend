@@ -32,6 +32,7 @@
             min-width: 10em;
             width: 10em;
             text-align: right;
+            text-wrap: wrap;
         }
     }
 
@@ -90,6 +91,12 @@
                 font-family: monospace;
                 user-select: text;
             }
+        }
+    }
+
+    .panel-labels {
+        .#{$ns}-label {
+            width: 12em;
         }
     }
 }

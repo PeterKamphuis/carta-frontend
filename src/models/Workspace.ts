@@ -48,6 +48,7 @@ export interface WorkspaceVectorOverlayConfig {
     debiasing: boolean;
     qError: number;
     uError: number;
+    thresholdOption: CARTA.PolarizationType.I | CARTA.PolarizationType.Plinear;
 
     visible: boolean;
     thickness: number;
@@ -74,6 +75,12 @@ export interface WorkspaceRegion {
     dashes?: number[];
     locked?: boolean;
     annotationStyles?: any;
+}
+
+export interface WorkspaceColorBlending {
+    imageListIndex: number;
+    selectedFrameId: number[];
+    alpha: number[];
 }
 
 export interface WorkspaceFile {
@@ -108,6 +115,7 @@ export interface Workspace {
     frontendVersion: number;
     description?: string;
     files?: WorkspaceFile[];
+    colorBlendingImages?: WorkspaceColorBlending[];
     references?: {
         spatial?: number;
         spectral?: number;

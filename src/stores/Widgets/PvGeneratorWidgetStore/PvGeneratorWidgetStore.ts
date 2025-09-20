@@ -4,7 +4,7 @@ import {action, computed, makeObservable, observable, reaction} from "mobx";
 
 import {SpectralSystem} from "models";
 import {TelemetryAction, TelemetryService} from "services";
-import {AppStore, PreferenceStore} from "stores";
+import {AppStore, PreferenceKeys, PreferenceStore} from "stores";
 import {FrameStore} from "stores/Frame";
 import {length2D} from "utilities";
 
@@ -25,6 +25,8 @@ export class PvGeneratorWidgetStore extends RegionWidgetStore {
     @observable previewRegionId: number;
     @observable previewFrame: FrameStore | null;
     @observable pvCutRegionId: number | null;
+    @observable previewFullViewWidth: number = 1;
+    @observable previewFullViewHeight: number = 1;
 
     @computed get regionOptions(): OptionProps[] {
         const appStore = AppStore.Instance;
@@ -151,6 +153,7 @@ export class PvGeneratorWidgetStore extends RegionWidgetStore {
 
     @action setReverse = (bool: boolean) => {
         this.reverse = bool;
+        PreferenceStore.Instance.setPreference(PreferenceKeys.SILENT_PV_AXES_ORDER_REVERSE, bool);
     };
 
     @action setKeep = (bool: boolean) => {
@@ -189,13 +192,22 @@ export class PvGeneratorWidgetStore extends RegionWidgetStore {
         this.pvCutRegionId = null;
     };
 
+    @action onResizePreviewWidget = (width: number, height: number) => {
+        if (width > 0 && height > 0) {
+            this.previewFullViewWidth = width;
+            this.previewFullViewHeight = height;
+            this.previewFrame?.fitZoom();
+        }
+    };
+
     constructor() {
         super(RegionsType.LINE);
         makeObservable(this);
         this.width = 3;
-        this.reverse = false;
+        this.reverse = PreferenceStore.Instance.isPVAxesOrderReverse;
         this.keep = false;
         this.regionIdMap.set(ACTIVE_FILE_ID, RegionId.NONE);
+
         reaction(
             () => this.effectiveFrame?.channelValueBounds,
             channelValueBounds => {

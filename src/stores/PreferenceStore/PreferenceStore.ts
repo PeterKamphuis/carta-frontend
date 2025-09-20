@@ -2,7 +2,6 @@ import {Colors} from "@blueprintjs/core";
 import {CARTA} from "carta-protobuf";
 import {action, computed, flow, makeObservable, observable} from "mobx";
 
-import {MemoryUnit} from "components/Dialogs";
 import {
     CARTA_INFO,
     CompressionQuality,
@@ -27,16 +26,15 @@ import {ApiService} from "services";
 import {TelemetryMode} from "services/TelemetryService";
 import {BeamType, FileFilteringType} from "stores";
 import {ContourGeneratorType, FrameScaling} from "stores/Frame";
-import {parseBoolean} from "utilities";
 
 export enum PreferenceKeys {
     SILENT_FILE_SORTING_STRING = "fileSortingString",
     SILENT_FILE_FILTERING_TYPE = "fileFilteringType",
+    SILENT_PV_AXES_ORDER_REVERSE = "pvAxesOrderReverse",
 
     GLOBAL_THEME = "theme",
     GLOBAL_AUTOLAUNCH = "autoLaunch",
     GLOBAL_FILE_FILTER_MODE = "fileFilterMode",
-    GLOBAL_LAYOUT = "layout",
     GLOBAL_CURSOR_POSITION = "cursorPosition",
     GLOBAL_ZOOM_MODE = "zoomMode",
     GLOBAL_ZOOM_POINT = "zoomPoint",
@@ -90,6 +88,11 @@ export enum PreferenceKeys {
     WCS_OVERLAY_BEAM_TYPE = "beamType",
     WCS_OVERLAY_BEAM_WIDTH = "beamWidth",
     WCS_OVERLAY_CURSOR_INFO = "cursorInfoVisible",
+
+    LAYOUT = "layout",
+    LAYOUT_DYNAMIC_LAYOUT_ENABLE = "dynamicLayoutEnable",
+    LAYOUT_IS_HIGH_DIM_PRIORITY = "isHighDimPriority",
+    LAYOUT_DYNAMIC_LAYOUT = "dynamicLayout",
 
     REGION_COLOR = "regionColor",
     REGION_LINE_WIDTH = "regionLineWidth",
@@ -151,19 +154,19 @@ const DEFAULTS = {
         fileSortingString: "-date",
         fileFilteringType: FileFilteringType.Fuzzy,
         pixelGridVisible: false,
-        pixelGridColor: "#FFFFFF",
+        pixelGridColor: "#ffffff",
         imageMultiPanelEnabled: false,
         imagePanelMode: ImagePanelMode.Dynamic,
         imagePanelColumns: 2,
         imagePanelRows: 2,
         checkNewRelease: true,
-        latestRelease: "v" + CARTA_INFO.version
+        latestRelease: "v" + CARTA_INFO.version,
+        pvAxesOrderReverse: false
     },
     GLOBAL: {
         theme: Theme.AUTO,
         autoLaunch: true,
         fileFilterMode: FileFilterMode.Content,
-        layout: PresetLayout.DEFAULT,
         cursorPosition: CursorPosition.TRACKING,
         zoomMode: Zoom.FIT,
         zoomPoint: ZoomPoint.CURSOR,
@@ -222,8 +225,14 @@ const DEFAULTS = {
         beamWidth: 1,
         cursorInfoVisible: CursorInfoVisibility.ActiveImage
     },
+    LAYOUT: {
+        layout: PresetLayout.DEFAULT,
+        dynamicLayoutEnable: false,
+        isHighDimPriority: true,
+        existLayoutMapping: {}
+    },
     REGION: {
-        regionColor: "#2EE6D6",
+        regionColor: "#2ee6d6",
         regionLineWidth: 2,
         regionDashLength: 0,
         regionType: CARTA.RegionType.RECTANGLE,
@@ -231,7 +240,7 @@ const DEFAULTS = {
         regionSize: 30
     },
     ANNOTATION: {
-        annotationColor: "#FFBA01",
+        annotationColor: "#ffba01",
         annotationLineWidth: 2,
         annotationDashLength: 0,
         annotationType: CARTA.RegionType.ANNRECTANGLE,
@@ -252,8 +261,7 @@ const DEFAULTS = {
         lowBandwidthMode: false,
         stopAnimationPlaybackMinutes: 5,
         limitOverlayRedraw: true,
-        pvPreviewCubeSizeLimit: 1,
-        pvPreviewCubeSizeLimitUnit: MemoryUnit.GB
+        pvPreviewCubeSizeLimit: 1
     },
     LOG_EVENT: {
         eventLoggingEnabled: []
@@ -315,10 +323,6 @@ export class PreferenceStore {
 
     @computed get fileFilteringType(): FileFilteringType {
         return this.preferences.get(PreferenceKeys.SILENT_FILE_FILTERING_TYPE) ?? DEFAULTS.SILENT.fileFilteringType;
-    }
-
-    @computed get layout(): string {
-        return this.preferences.get(PreferenceKeys.GLOBAL_LAYOUT) ?? DEFAULTS.GLOBAL.layout;
     }
 
     @computed get cursorPosition(): string {
@@ -504,7 +508,7 @@ export class PreferenceStore {
         return this.preferences.get(PreferenceKeys.WCS_OVERLAY_COLORBAR_INTERACTIVE) ?? DEFAULTS.WCS_OVERLAY.colorbarInteractive;
     }
 
-    @computed get colorbarPosition(): string {
+    @computed get colorbarPosition(): "right" | "top" | "bottom" {
         return this.preferences.get(PreferenceKeys.WCS_OVERLAY_COLORBAR_POSITION) ?? DEFAULTS.WCS_OVERLAY.colorbarPosition;
     }
 
@@ -623,12 +627,12 @@ export class PreferenceStore {
         return this.preferences.get(PreferenceKeys.PERFORMANCE_STOP_ANIMATION_PLAYBACK_MINUTES) ?? DEFAULTS.PERFORMANCE.stopAnimationPlaybackMinutes;
     }
 
-    @computed get pvPreivewCubeSizeLimit(): number {
+    @computed get pvPreviewCubeSizeLimit(): number {
         return this.preferences.get(PreferenceKeys.PERFORMANCE_PV_PREVIEW_CUBE_SIZE_LIMIT) ?? DEFAULTS.PERFORMANCE.pvPreviewCubeSizeLimit;
     }
 
-    @computed get pvPreivewCubeSizeLimitUnit(): string {
-        return this.preferences.get(PreferenceKeys.PERFORMANCE_PV_PREVIEW_CUBE_SIZE_LIMIT_UNIT) ?? DEFAULTS.PERFORMANCE.pvPreviewCubeSizeLimitUnit;
+    @computed get isPVAxesOrderReverse(): boolean {
+        return this.preferences.get(PreferenceKeys.SILENT_PV_AXES_ORDER_REVERSE) ?? DEFAULTS.SILENT.pvAxesOrderReverse;
     }
 
     @computed get isSelectingAllLogEvents(): boolean {
@@ -741,6 +745,25 @@ export class PreferenceStore {
         return this.preferences.get(PreferenceKeys.LATEST_RELEASE) ?? DEFAULTS.SILENT.latestRelease;
     }
 
+    @computed get layout(): string {
+        return this.preferences.get(PreferenceKeys.LAYOUT) ?? DEFAULTS.LAYOUT.layout;
+    }
+
+    // getter for dynamic layout setting
+    @computed get dynamicLayoutEnable(): boolean {
+        return this.preferences.get(PreferenceKeys.LAYOUT_DYNAMIC_LAYOUT_ENABLE) ?? DEFAULTS.LAYOUT.dynamicLayoutEnable;
+    }
+
+    // getter for file priority for dynamic layout setting
+    @computed get isHighDimPriority(): boolean {
+        return this.preferences.get(PreferenceKeys.LAYOUT_IS_HIGH_DIM_PRIORITY) ?? DEFAULTS.LAYOUT.isHighDimPriority;
+    }
+
+    // getter for file priority for dynamic layout setting
+    @computed get existLayoutMapping(): {[key: string]: string} {
+        return this.preferences.get(PreferenceKeys.LAYOUT_DYNAMIC_LAYOUT) ?? DEFAULTS.LAYOUT.existLayoutMapping;
+    }
+
     /**
      * Sets the preference parameter
      *
@@ -800,7 +823,8 @@ export class PreferenceStore {
             PreferenceKeys.IMAGE_MULTI_PANEL_ENABLED,
             PreferenceKeys.IMAGE_PANEL_MODE,
             PreferenceKeys.IMAGE_PANEL_COLUMNS,
-            PreferenceKeys.IMAGE_PANEL_ROWS
+            PreferenceKeys.IMAGE_PANEL_ROWS,
+            PreferenceKeys.SILENT_PV_AXES_ORDER_REVERSE
         ]);
     };
 
@@ -812,7 +836,6 @@ export class PreferenceStore {
             PreferenceKeys.GLOBAL_THEME,
             PreferenceKeys.GLOBAL_AUTOLAUNCH,
             PreferenceKeys.GLOBAL_FILE_FILTER_MODE,
-            PreferenceKeys.GLOBAL_LAYOUT,
             PreferenceKeys.GLOBAL_CURSOR_POSITION,
             PreferenceKeys.GLOBAL_ZOOM_MODE,
             PreferenceKeys.GLOBAL_ZOOM_POINT,
@@ -895,6 +918,13 @@ export class PreferenceStore {
             PreferenceKeys.WCS_OVERLAY_WCS_TYPE,
             PreferenceKeys.WCS_OVERLAY_CURSOR_INFO
         ]);
+    };
+
+    /**
+     * Reset the layout settings
+     */
+    @action resetLayoutSettings = () => {
+        this.clearPreferences([PreferenceKeys.LAYOUT, PreferenceKeys.LAYOUT_DYNAMIC_LAYOUT_ENABLE, PreferenceKeys.LAYOUT_IS_HIGH_DIM_PRIORITY]);
     };
 
     /**
@@ -983,8 +1013,6 @@ export class PreferenceStore {
      * Fetch the values of the preference keys
      */
     @flow.bound *fetchPreferences() {
-        yield this.upgradePreferences();
-
         const preferences = yield ApiService.Instance.getPreferences();
         if (preferences) {
             const keys = Object.keys(preferences);
@@ -995,146 +1023,6 @@ export class PreferenceStore {
         }
         this.preferenceReady = true;
     }
-
-    /**
-     * Perform localStorage upgrade by iterating over the old CARTA version keys. This list consists of keys that were present when CARTA used a single localStorage entry per key
-     */
-    private upgradePreferences = async () => {
-        if (!localStorage.getItem("preferences")) {
-            const stringKeys = [
-                PreferenceKeys.GLOBAL_THEME,
-                PreferenceKeys.GLOBAL_LAYOUT,
-                PreferenceKeys.GLOBAL_CURSOR_POSITION,
-                PreferenceKeys.GLOBAL_ZOOM_MODE,
-                PreferenceKeys.GLOBAL_ZOOM_POINT,
-                PreferenceKeys.GLOBAL_SPECTRAL_MATCHING_TYPE,
-                PreferenceKeys.RENDER_CONFIG_COLORMAP,
-                PreferenceKeys.RENDER_CONFIG_NAN_COLOR_HEX,
-                PreferenceKeys.CONTOUR_CONFIG_GENERATOR_TYPE,
-                PreferenceKeys.CONTOUR_CONFIG_COLOR,
-                PreferenceKeys.CONTOUR_CONFIG_COLORMAP,
-                PreferenceKeys.WCS_OVERLAY_WCS_TYPE,
-                PreferenceKeys.WCS_OVERLAY_COLORBAR_POSITION,
-                PreferenceKeys.WCS_OVERLAY_BEAM_COLOR,
-                PreferenceKeys.WCS_OVERLAY_BEAM_TYPE,
-                PreferenceKeys.REGION_COLOR,
-                PreferenceKeys.REGION_CREATION_MODE,
-                PreferenceKeys.WCS_OVERLAY_AST_COLOR,
-                PreferenceKeys.CATALOG_TABLE_SEPARATOR_POSITION,
-                PreferenceKeys.PIXEL_GRID_COLOR
-            ];
-
-            const intKeys = [
-                PreferenceKeys.GLOBAL_AUTO_WCS_MATCHING,
-                PreferenceKeys.RENDER_CONFIG_SCALING,
-                PreferenceKeys.CONTOUR_CONFIG_SMOOTHING_MODE,
-                PreferenceKeys.CONTOUR_CONFIG_SMOOTHING_FACTOR,
-                PreferenceKeys.CONTOUR_CONFIG_NUM_LEVELS,
-                PreferenceKeys.REGION_DASH_LENGTH,
-                PreferenceKeys.REGION_TYPE,
-                PreferenceKeys.PERFORMANCE_IMAGE_COMPRESSION_QUALITY,
-                PreferenceKeys.PERFORMANCE_ANIMATION_COMPRESSION_QUALITY,
-                PreferenceKeys.PERFORMANCE_GPU_TILE_CACHE,
-                PreferenceKeys.PERFORMANCE_SYSTEM_TILE_CACHE,
-                PreferenceKeys.PERFORMANCE_CONTOUR_DECIMATION,
-                PreferenceKeys.PERFORMANCE_CONTOUR_COMPRESSION_LEVEL,
-                PreferenceKeys.PERFORMANCE_CONTOUR_CHUNK_SIZE,
-                PreferenceKeys.PERFORMANCE_CONTOUR_CONTROL_MAP_WIDTH,
-                PreferenceKeys.PERFORMANCE_STOP_ANIMATION_PLAYBACK_MINUTES,
-                PreferenceKeys.CATALOG_DISPLAYED_COLUMN_SIZE
-            ];
-
-            const numberKeys = [
-                PreferenceKeys.RENDER_CONFIG_PERCENTILE,
-                PreferenceKeys.RENDER_CONFIG_SCALING_ALPHA,
-                PreferenceKeys.RENDER_CONFIG_SCALING_GAMMA,
-                PreferenceKeys.RENDER_CONFIG_NAN_ALPHA,
-                PreferenceKeys.CONTOUR_CONFIG_THICKNESS,
-                PreferenceKeys.WCS_OVERLAY_COLORBAR_WIDTH,
-                PreferenceKeys.WCS_OVERLAY_COLORBAR_TICKS_DENSITY,
-                PreferenceKeys.WCS_OVERLAY_BEAM_WIDTH,
-                PreferenceKeys.REGION_LINE_WIDTH
-            ];
-
-            const booleanKeys = [
-                PreferenceKeys.GLOBAL_AUTOLAUNCH,
-                PreferenceKeys.GLOBAL_DRAG_PANNING,
-                PreferenceKeys.GLOBAL_TRANSPARENT_IMAGE_BACKGROUND,
-                PreferenceKeys.RENDER_CONFIG_USE_SMOOTHED_BIAS_CONTRAST,
-                PreferenceKeys.CONTOUR_CONFIG_COLORMAP_ENABLED,
-                PreferenceKeys.WCS_OVERLAY_AST_GRID_VISIBLE,
-                PreferenceKeys.WCS_OVERLAY_AST_LABELS_VISIBLE,
-                PreferenceKeys.WCS_OVERLAY_COLORBAR_VISIBLE,
-                PreferenceKeys.WCS_OVERLAY_COLORBAR_INTERACTIVE,
-                PreferenceKeys.WCS_OVERLAY_COLORBAR_LABEL_VISIBLE,
-                PreferenceKeys.WCS_OVERLAY_BEAM_VISIBLE,
-                PreferenceKeys.PERFORMANCE_STREAM_CONTOURS_WHILE_ZOOMING,
-                PreferenceKeys.PERFORMANCE_LOW_BAND_WIDTH_MODE,
-                PreferenceKeys.PIXEL_GRID_VISIBLE
-            ];
-
-            const preferenceObject = {};
-
-            for (const key of stringKeys) {
-                const entry = localStorage.getItem(key);
-                if (entry) {
-                    preferenceObject[key] = entry;
-                }
-            }
-
-            for (const key of intKeys) {
-                const entry = parseInt(localStorage.getItem(key));
-                if (isFinite(entry)) {
-                    preferenceObject[key] = entry;
-                }
-            }
-
-            for (const key of numberKeys) {
-                const entry = parseFloat(localStorage.getItem(key));
-                if (isFinite(entry)) {
-                    preferenceObject[key] = entry;
-                }
-            }
-
-            for (const key of booleanKeys) {
-                const entryString = localStorage.getItem(key);
-                if (entryString) {
-                    preferenceObject[key] = parseBoolean(localStorage.getItem(key), false);
-                }
-            }
-
-            const logEntryString = localStorage.getItem(PreferenceKeys.LOG_EVENT);
-            if (logEntryString) {
-                try {
-                    const logEntries = JSON.parse(logEntryString);
-                    if (logEntries && Array.isArray(logEntries)) {
-                        preferenceObject[PreferenceKeys.LOG_EVENT] = logEntries;
-                    }
-                } catch (e) {
-                    console.log("Problem parsing log events");
-                }
-            }
-
-            // Manual schema adjustments
-
-            // Beam -> beam and Solid -> solid
-            if (preferenceObject[PreferenceKeys.WCS_OVERLAY_BEAM_TYPE]) {
-                preferenceObject[PreferenceKeys.WCS_OVERLAY_BEAM_TYPE] = preferenceObject[PreferenceKeys.WCS_OVERLAY_BEAM_TYPE].toLowerCase();
-            }
-
-            // 1.0x to full
-            if (preferenceObject[PreferenceKeys.GLOBAL_ZOOM_MODE] === "1.0x") {
-                preferenceObject[PreferenceKeys.GLOBAL_ZOOM_MODE] = "full";
-            }
-
-            for (const key of Object.keys(preferenceObject)) {
-                this.preferences.set(key as PreferenceKeys, preferenceObject[key]);
-            }
-
-            preferenceObject["version"] = 1;
-            await ApiService.Instance.setPreferences(preferenceObject);
-        }
-    };
 
     private constructor() {
         makeObservable(this);

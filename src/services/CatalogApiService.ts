@@ -20,7 +20,7 @@ export class CatalogApiService {
     private static staticInstance: CatalogApiService;
     private static readonly DBMap = new Map<CatalogDatabase, {baseURL: string}>([
         [CatalogDatabase.SIMBAD, {baseURL: "https://simbad.u-strasbg.fr/simbad/sim-tap/"}],
-        [CatalogDatabase.VIZIER, {baseURL: "https://vizier.u-strasbg.fr/viz-bin/"}]
+        [CatalogDatabase.VIZIER, {baseURL: "https://vizier.cds.unistra.fr/viz-bin/"}]
     ]);
     private axiosInstanceSimbad: AxiosInstance;
     private axiosInstanceVizier: AxiosInstance;
@@ -156,7 +156,7 @@ export class CatalogApiService {
             appStore.fileBrowserStore.hideFileBrowser();
             const catalogProfileStore = new CatalogOnlineQueryProfileStore(catalogInfo, headers, columnData, type);
             appStore.catalogStore.catalogProfileStores.set(fileId, catalogProfileStore);
-            appStore.dialogStore.hideDialog(DialogId.CatalogQuery);
+            appStore.dialogStore.hideDialog(DialogId.OnlineDataQuery);
         }
     };
 

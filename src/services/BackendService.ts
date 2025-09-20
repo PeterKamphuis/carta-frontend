@@ -55,7 +55,7 @@ export class BackendService {
         return BackendService.staticInstance;
     }
 
-    private static readonly IcdVersion = 28;
+    private static readonly IcdVersion = 30;
     private static readonly DefaultFeatureFlags = CARTA.ClientFeatureFlags.WEB_ASSEMBLY | CARTA.ClientFeatureFlags.WEB_GL;
     private static readonly MaxConnectionAttempts = 15;
     private static readonly ConnectionAttemptDelay = 1000;
@@ -132,10 +132,10 @@ export class BackendService {
             [CARTA.EventType.REGION_FILE_INFO_RESPONSE, {messageClass: CARTA.RegionFileInfoResponse, handler: this.onDeferredResponse}],
             [CARTA.EventType.CATALOG_FILE_INFO_RESPONSE, {messageClass: CARTA.CatalogFileInfoResponse, handler: this.onDeferredResponse}],
             [CARTA.EventType.OPEN_FILE_ACK, {messageClass: CARTA.OpenFileAck, handler: this.onDeferredResponse}],
-            [CARTA.EventType.SAVE_FILE_ACK, {messageClass: CARTA.SaveFileAck, handler: this.onDeferredResponse}],
+            [CARTA.EventType.SAVE_FILE_ACK, {messageClass: CARTA.SaveFileAck, handler: this.onSaveFileAndRegionAck}],
             [CARTA.EventType.OPEN_CATALOG_FILE_ACK, {messageClass: CARTA.OpenCatalogFileAck, handler: this.onDeferredResponse}],
             [CARTA.EventType.IMPORT_REGION_ACK, {messageClass: CARTA.ImportRegionAck, handler: this.onDeferredResponse}],
-            [CARTA.EventType.EXPORT_REGION_ACK, {messageClass: CARTA.ExportRegionAck, handler: this.onDeferredResponse}],
+            [CARTA.EventType.EXPORT_REGION_ACK, {messageClass: CARTA.ExportRegionAck, handler: this.onSaveFileAndRegionAck}],
             [CARTA.EventType.SET_REGION_ACK, {messageClass: CARTA.SetRegionAck, handler: this.onDeferredResponse}],
             [CARTA.EventType.RESUME_SESSION_ACK, {messageClass: CARTA.ResumeSessionAck, handler: this.onDeferredResponse}],
             [CARTA.EventType.START_ANIMATION_ACK, {messageClass: CARTA.StartAnimationAck, handler: this.onStartAnimationAck}],
@@ -157,7 +157,8 @@ export class BackendService {
             [CARTA.EventType.FITTING_PROGRESS, {messageClass: CARTA.FittingProgress, handler: this.onStreamedFittingProgress}],
             [CARTA.EventType.FITTING_RESPONSE, {messageClass: CARTA.FittingResponse, handler: this.onDeferredResponse}],
             [CARTA.EventType.VECTOR_OVERLAY_TILE_DATA, {messageClass: CARTA.VectorOverlayTileData, handler: this.onStreamedVectorOverlayData}],
-            [CARTA.EventType.PV_PREVIEW_DATA, {messageClass: CARTA.PvPreviewData, handler: this.onStreamedPvPreviewData}]
+            [CARTA.EventType.PV_PREVIEW_DATA, {messageClass: CARTA.PvPreviewData, handler: this.onStreamedPvPreviewData}],
+            [CARTA.EventType.REMOTE_FILE_RESPONSE, {messageClass: CARTA.RemoteFileResponse, handler: this.onDeferredResponse}]
         ]);
 
         // check ping every 5 seconds
@@ -362,11 +363,11 @@ export class BackendService {
         }
     }
 
-    async exportRegion(directory: string, file: string, type: CARTA.FileType, coordType: CARTA.CoordinateType, fileId: number, regionStyles: Map<number, CARTA.IRegionStyle>): Promise<CARTA.IExportRegionAck> {
+    async exportRegion(directory: string, file: string, type: CARTA.FileType, coordType: CARTA.CoordinateType, fileId: number, regionStyles: Map<number, CARTA.IRegionStyle>, overwrite: boolean = false): Promise<CARTA.IExportRegionAck> {
         if (this.connectionStatus !== ConnectionStatus.ACTIVE) {
             throw new Error("Not connected");
         } else {
-            const message = CARTA.ExportRegion.create({directory, file, type, fileId, regionStyles: mapToObject(regionStyles), coordType});
+            const message = CARTA.ExportRegion.create({directory, file, type, fileId, regionStyles: mapToObject(regionStyles), coordType, overwrite});
             const requestId = this.eventCounter;
             this.logEvent(CARTA.EventType.EXPORT_REGION, requestId, message, false);
             if (this.sendEvent(CARTA.EventType.EXPORT_REGION, CARTA.ExportRegion.encode(message).finish())) {
@@ -464,12 +465,13 @@ export class BackendService {
         channels?: number[],
         stokes?: number[],
         keepDegenerate?: boolean,
-        restFreq?: number
+        restFreq?: number,
+        overwrite: boolean = false
     ): Promise<CARTA.ISaveFileAck> {
         if (this.connectionStatus !== ConnectionStatus.ACTIVE) {
             throw new Error("Not connected");
         } else {
-            const message = CARTA.SaveFile.create({fileId, outputFileDirectory, outputFileName, outputFileType, regionId, channels, stokes, keepDegenerate, restFreq});
+            const message = CARTA.SaveFile.create({fileId, outputFileDirectory, outputFileName, outputFileType, regionId, channels, stokes, keepDegenerate, restFreq, overwrite});
             const requestId = this.eventCounter;
             this.logEvent(CARTA.EventType.SAVE_FILE, this.eventCounter, message, false);
             if (this.sendEvent(CARTA.EventType.SAVE_FILE, CARTA.SaveFile.encode(message).finish())) {
@@ -494,9 +496,10 @@ export class BackendService {
     }
 
     @action("set channels")
-    setChannels(fileId: number, channel: number, stokes: number, requiredTiles: CARTA.IAddRequiredTiles): boolean {
+    setChannels(fileId: number, channel: number | undefined, stokes: number, requiredTiles: CARTA.IAddRequiredTiles, channelMapEnabled?: boolean, _channelRange?: CARTA.IIntBounds | undefined, currentRange?: CARTA.IIntBounds): boolean {
         if (this.connectionStatus === ConnectionStatus.ACTIVE) {
-            const message = CARTA.SetImageChannels.create({fileId, channel, stokes, requiredTiles});
+            const channelRange: CARTA.IIntBounds | null = _channelRange || null;
+            const message = CARTA.SetImageChannels.create({fileId, channel, stokes, requiredTiles, channelMapEnabled, channelRange, currentRange});
             this.logEvent(CARTA.EventType.SET_IMAGE_CHANNELS, this.eventCounter, message, false);
             if (this.sendEvent(CARTA.EventType.SET_IMAGE_CHANNELS, CARTA.SetImageChannels.encode(message).finish())) {
                 return true;
@@ -611,9 +614,9 @@ export class BackendService {
     }
 
     @action("add required tiles")
-    addRequiredTiles(fileId: number, tiles: Array<number>, quality: number): boolean {
+    addRequiredTiles(fileId: number, tiles: Array<number>, quality: number, currentTiles?: number[]): boolean {
         if (this.connectionStatus === ConnectionStatus.ACTIVE) {
-            const message = CARTA.AddRequiredTiles.create({fileId, tiles, compressionQuality: quality, compressionType: CARTA.CompressionType.ZFP});
+            const message = CARTA.AddRequiredTiles.create({fileId, tiles, compressionQuality: quality, compressionType: CARTA.CompressionType.ZFP, currentTiles});
             this.logEvent(CARTA.EventType.ADD_REQUIRED_TILES, this.eventCounter, message, false);
             if (this.sendEvent(CARTA.EventType.ADD_REQUIRED_TILES, CARTA.AddRequiredTiles.encode(message).finish())) {
                 return true;
@@ -667,6 +670,17 @@ export class BackendService {
         if (this.connectionStatus === ConnectionStatus.ACTIVE) {
             this.logEvent(CARTA.EventType.ANIMATION_FLOW_CONTROL, this.eventCounter, message, false);
             if (this.sendEvent(CARTA.EventType.ANIMATION_FLOW_CONTROL, CARTA.AnimationFlowControl.encode(message).finish())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @action("channel map flow control")
+    sendChannelMapFlowControl(message: CARTA.IChannelMapFlowControl) {
+        if (this.connectionStatus === ConnectionStatus.ACTIVE) {
+            this.logEvent(CARTA.EventType.CHANNEL_MAP_FLOW_CONTROL, this.eventCounter, message, false);
+            if (this.sendEvent(CARTA.EventType.CHANNEL_MAP_FLOW_CONTROL, CARTA.ChannelMapFlowControl.encode(message).finish())) {
                 return true;
             }
         }
@@ -767,6 +781,22 @@ export class BackendService {
             this.logEvent(CARTA.EventType.PV_REQUEST, requestId, message, false);
             if (this.sendEvent(CARTA.EventType.PV_REQUEST, CARTA.PvRequest.encode(message).finish())) {
                 const deferredResponse = new Deferred<CARTA.IPvResponse>();
+                this.deferredMap.set(requestId, deferredResponse);
+                return await deferredResponse.promise;
+            } else {
+                throw new Error("Could not send event");
+            }
+        }
+    }
+
+    async requestRemoteFile(message: CARTA.IRemoteFileRequest): Promise<CARTA.IRemoteFileResponse> {
+        if (this.connectionStatus !== ConnectionStatus.ACTIVE) {
+            throw new Error("Not connected");
+        } else {
+            const requestId = this.eventCounter;
+            this.logEvent(CARTA.EventType.REMOTE_FILE_REQUEST, requestId, message, false);
+            if (this.sendEvent(CARTA.EventType.REMOTE_FILE_REQUEST, CARTA.RemoteFileRequest.encode(message).finish())) {
+                const deferredResponse = new Deferred<CARTA.IRemoteFileResponse>();
                 this.deferredMap.set(requestId, deferredResponse);
                 return await deferredResponse.promise;
             } else {
@@ -909,6 +939,19 @@ export class BackendService {
         } else {
             console.log(`Can't find deferred for request ${eventId}`);
         }
+    }
+
+    private onSaveFileAndRegionAck(eventId: number, ack: CARTA.SaveFileAck | CARTA.ExportRegionAck) {
+        // to check the overwriteConfirmationRequired field, return the entire response instead of the message field
+        if (!ack.success) {
+            const def = this.deferredMap.get(eventId);
+            if (def) {
+                def.reject(ack);
+            } else {
+                console.log(`Can't find deferred for request ${eventId}`);
+            }
+        }
+        this.onDeferredResponse(eventId, ack);
     }
 
     private onRegisterViewerAck(eventId: number, ack: CARTA.RegisterViewerAck) {

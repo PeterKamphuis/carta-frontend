@@ -8,15 +8,14 @@ import {AppStore, SnippetStore} from "stores";
 
 export enum DialogId {
     About = "about-dialog",
-    CatalogQuery = "catalog-query-dialog",
+    OnlineDataQuery = "online-data-query-dialog",
     Snippet = "snippet-dialog",
     Contour = "contour-dialog",
-    DistanceMeasure = "distance-measure-dialog",
     ExternalPage = "external-page-dialog",
     FileBrowser = "file-browser-dialog",
     FileInfo = "file-info-dialog",
     Fitting = "fitting-dialog",
-    Layout = "save-layout-dialog",
+    Layout = "layout-dialog",
     Preference = "preference-dialog",
     Region = "region-dialog",
     Stokes = "stokes-dialog",
@@ -27,7 +26,6 @@ export enum DialogId {
 }
 
 interface showDialogOptions {
-    oldLayoutName?: string;
     mode?: WorkspaceDialogMode;
     url?: string;
     title?: string;
@@ -77,12 +75,6 @@ export class DialogStore {
             this.zIndexManager.updateIndexOnSelect(id);
         } else if (!this.dialogVisible.get(id)) {
             switch (id) {
-                case DialogId.Layout:
-                    this.dialogVisible.set(DialogId.Layout, true);
-                    AppStore.Instance.layoutStore.setOldLayoutName(options?.oldLayoutName);
-                    this.zIndexManager.assignIndex(DialogId.Layout);
-                    break;
-
                 case DialogId.Workspace:
                     this.hideDialog(DialogId.FileBrowser);
                     if (options?.mode) {

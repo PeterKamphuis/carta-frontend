@@ -2,12 +2,11 @@ import * as AST from "ast_wrapper";
 import {action, autorun, computed, makeObservable, observable} from "mobx";
 
 import {WCSType} from "models";
-import {AppStore, PreferenceStore} from "stores";
+import {AlertStore, AppStore, PreferenceStore, PvGeneratorWidgetStore} from "stores";
 import {FrameStore, OverlayBeamStore, WCS_PRECISION} from "stores/Frame";
 import {clamp, getColorForTheme, toFixed} from "utilities";
 
 const AST_DEFAULT_COLOR = "auto-blue";
-const COLORBAR_TICK_NUM_MIN = 3;
 
 export enum AstColorsIndex {
     GLOBAL = 0,
@@ -32,7 +31,8 @@ export enum SystemType {
     FK4 = "FK4",
     FK5 = "FK5",
     Galactic = "GALACTIC",
-    ICRS = "ICRS"
+    ICRS = "ICRS",
+    Image = "CARTESIAN"
 }
 
 export enum NumberFormatType {
@@ -99,9 +99,37 @@ export class OverlayGlobalSettings {
         astString.add("Labelling", this.labelType);
         astString.add("Color", AstColorsIndex.GLOBAL);
         astString.add("Tol", toFixed(this.tolerance / 100, 2), this.tolerance >= 0.001); // convert to fraction
-        astString.add("System", this.explicitSystem);
 
-        if ((frame?.isXY || frame?.isYX) && !frame?.isPVImage && typeof this.explicitSystem !== "undefined") {
+        const isWcsFrameAndSystem = typeof this.explicitSystem !== "undefined" && this.explicitSystem !== SystemType.Image && frame.validWcs;
+        if (isWcsFrameAndSystem) {
+            astString.add("System", this.explicitSystem);
+        }
+
+        if (!AppStore.Instance.overlaySettings.labels?.customText) {
+            const symbolX = AST.getString(frame?.wcsInfo, "Symbol(1)");
+            const symbolY = AST.getString(frame?.wcsInfo, "Symbol(2)");
+            const labelX = AST.getString(frame?.wcsInfo, "Label(1)");
+            const labelY = AST.getString(frame?.wcsInfo, "Label(2)");
+            const haveUnitX = AST.getString(frame?.wcsInfo, "Unit(1)") !== "";
+            const haveUnitY = AST.getString(frame?.wcsInfo, "Unit(2)") !== "";
+
+            const isSysPixel = (this.explicitSystem === undefined && !(frame?.isPVImage || frame?.isSwappedZ)) || this.explicitSystem === SystemType.Image;
+            const getSystemName = (symbolXY: string, isSysPixel: boolean, haveUnit: boolean, explicitSystem: SystemType) => {
+                if (isSysPixel) {
+                    return haveUnit ? "" : " (pixel)";
+                } else if ((symbolXY === "RA" || symbolXY === "Dec") && AppStore.Instance.overlaySettings.labels?.raDecReference) {
+                    return ` (${explicitSystem})`;
+                } else {
+                    return "";
+                }
+            };
+            const systemNameX = getSystemName(symbolX, isSysPixel, haveUnitX, this?.explicitSystem);
+            const systemNameY = getSystemName(symbolY, isSysPixel, haveUnitY, this?.explicitSystem);
+            astString.add("Label(1)", `"${labelX.replace(/%/g, "%%%%").replace(/"/g, "”")}${systemNameX}"`, labelX !== undefined);
+            astString.add("Label(2)", `"${labelY.replace(/%/g, "%%%%").replace(/"/g, "”")}${systemNameY}"`, labelY !== undefined);
+        }
+
+        if ((frame?.isXY || frame?.isYX) && !frame?.isPVImage && isWcsFrameAndSystem) {
             if (this.system === SystemType.FK4) {
                 astString.add("Equinox", "1950");
             } else {
@@ -149,8 +177,17 @@ export class OverlayGlobalSettings {
         this.labelType = labelType;
     }
 
-    @action setSystem(system: SystemType) {
-        this.system = system;
+    @action async setSystem(system: SystemType) {
+        const frames = AppStore.Instance.frames;
+        if ((this.system === SystemType.Image) !== (system === SystemType.Image) && frames.map(f => f.spatialReference !== null).includes(true)) {
+            const confirm = await AlertStore.Instance.showInteractiveAlert("Switching system between world and image coordinates will disable spatial matching.");
+            if (confirm) {
+                frames.forEach(f => f.clearSpatialReference());
+                this.system = system;
+            }
+        } else {
+            this.system = system;
+        }
     }
 
     @action setDefaultSystem(system: SystemType) {
@@ -326,6 +363,7 @@ export class OverlayBorderSettings {
 }
 
 export class OverlayTickSettings {
+    @observable visible: boolean;
     @observable drawAll: boolean;
     @observable densityX: number;
     @observable densityY: number;
@@ -350,6 +388,7 @@ export class OverlayTickSettings {
 
     constructor() {
         makeObservable(this);
+        this.visible = true;
         this.drawAll = true;
         this.customDensity = false;
         this.densityX = 4;
@@ -359,6 +398,10 @@ export class OverlayTickSettings {
         this.width = 1;
         this.length = 1; // percentage
         this.majorLength = 2; // percentage
+    }
+
+    @action setVisible(visible: boolean) {
+        this.visible = visible;
     }
 
     @action setDrawAll(drawAll: boolean = true) {
@@ -609,6 +652,7 @@ export class OverlayLabelSettings {
     @observable color: string;
     @observable font: number;
     @observable fontSize: number;
+    @observable raDecReference: boolean;
     @observable customText: boolean;
     @observable customLabelX: string;
     @observable customLabelY: string;
@@ -621,6 +665,7 @@ export class OverlayLabelSettings {
         this.font = 0;
         this.customColor = false;
         this.color = AST_DEFAULT_COLOR;
+        this.raDecReference = true;
         this.customText = false;
         this.customLabelX = "";
         this.customLabelY = "";
@@ -629,12 +674,15 @@ export class OverlayLabelSettings {
     @computed get styleString() {
         let astString = new ASTSettingsString();
 
+        const appStore = AppStore.Instance;
+
         astString.add("TextLab", this.show);
         astString.add("Font(TextLab)", this.font);
-        astString.add("Size(TextLab)", this.fontSize * AppStore.Instance.imageRatio);
+        astString.add("Size(TextLab)", this.fontSize * appStore.imageRatio);
         astString.add("Color(TextLab)", AstColorsIndex.LABEL, this.customColor);
-        astString.add("Label(1)", this.customLabelX, this.customText);
-        astString.add("Label(2)", this.customLabelY, this.customText);
+
+        astString.add("Label(1)", `"${this.customLabelX.replace(/%/g, "%%%%").replace(/"/g, "”")}"`, this.customText);
+        astString.add("Label(2)", `"${this.customLabelY.replace(/%/g, "%%%%").replace(/"/g, "”")}"`, this.customText);
 
         return astString.toString();
     }
@@ -668,6 +716,10 @@ export class OverlayLabelSettings {
         this.fontSize = fontSize;
     }
 
+    @action setRaDecReference(raDecReference: boolean) {
+        this.raDecReference = raDecReference;
+    }
+
     @action setCustomText = (val: boolean) => {
         this.customText = val;
     };
@@ -686,7 +738,7 @@ export class OverlayColorbarSettings {
     @observable interactive: boolean;
     @observable width: number;
     @observable offset: number;
-    @observable position: string;
+    @observable position: "right" | "top" | "bottom";
     @observable customColor: boolean;
     @observable color: string;
     @observable borderVisible: boolean;
@@ -771,7 +823,7 @@ export class OverlayColorbarSettings {
         this.offset = offset;
     };
 
-    @action setPosition = (position: string) => {
+    @action setPosition = (position: "right" | "top" | "bottom") => {
         this.position = position;
     };
 
@@ -887,25 +939,6 @@ export class OverlayColorbarSettings {
         this.gradientVisible = visible;
     };
 
-    @computed get yOffset(): number {
-        const padding = AppStore.Instance?.overlayStore?.padding;
-        return this.position === "right" ? padding?.top : padding?.left;
-    }
-
-    @computed get height() {
-        const overlayStore = AppStore.Instance?.overlayStore;
-        return (frame?: FrameStore) => {
-            return this.position === "right" ? frame?.renderHeight || overlayStore?.renderHeight : frame?.renderWidth || overlayStore?.renderWidth;
-        };
-    }
-
-    @computed get tickNum() {
-        return (frame?: FrameStore) => {
-            const tickNum = Math.round((this.height(frame) / 100.0) * this.tickDensity);
-            return this.height && tickNum > COLORBAR_TICK_NUM_MIN ? tickNum : COLORBAR_TICK_NUM_MIN;
-        };
-    }
-
     @computed get rightBorderPos(): number {
         return this.position === "top" ? this.stageWidth - this.offset - this.width : this.offset + this.width;
     }
@@ -973,22 +1006,18 @@ export class OverlayBeamSettings {
     };
 }
 
-export class OverlayStore {
-    private static staticInstance: OverlayStore;
+export class OverlaySettings {
+    private static staticInstance: OverlaySettings;
 
     static get Instance() {
-        if (!OverlayStore.staticInstance) {
-            OverlayStore.staticInstance = new OverlayStore();
+        if (!OverlaySettings.staticInstance) {
+            OverlaySettings.staticInstance = new OverlaySettings();
         }
-        return OverlayStore.staticInstance;
+        return OverlaySettings.staticInstance;
     }
 
     /** Visibility of the overlay. */
     @observable visible: boolean = true;
-
-    // View size options
-    @observable fullViewWidth: number;
-    @observable fullViewHeight: number;
 
     // Individual settings
     @observable global: OverlayGlobalSettings;
@@ -1002,6 +1031,9 @@ export class OverlayStore {
     @observable colorbar: OverlayColorbarSettings;
     @observable beam: OverlayBeamSettings;
 
+    private base = 5;
+    defaultGap = 5;
+
     private constructor() {
         makeObservable(this);
         this.global = new OverlayGlobalSettings();
@@ -1014,14 +1046,14 @@ export class OverlayStore {
         this.ticks = new OverlayTickSettings();
         this.colorbar = new OverlayColorbarSettings();
         this.beam = new OverlayBeamSettings();
-        this.fullViewWidth = 1;
-        this.fullViewHeight = 1;
 
         // if the system is manually selected, set new default formats & update active frame's wcs settings
         autorun(() => {
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const _ = this.global.system;
             this.setFormatsFromSystem();
             AppStore.Instance.frames.forEach(frame => {
-                if (frame?.validWcs && frame?.wcsInfoForTransformation && this.global.explicitSystem) {
+                if (frame?.validWcs && frame?.wcsInfoForTransformation && this.global.explicitSystem && this.global.explicitSystem !== SystemType.Image) {
                     AST.set(frame.wcsInfoForTransformation, `System=${this.global.explicitSystem}`);
                 }
             });
@@ -1051,11 +1083,6 @@ export class OverlayStore {
     @action setVisible(visible: boolean) {
         this.visible = visible;
     }
-
-    @action setViewDimension = (width: number, height: number) => {
-        this.fullViewWidth = width;
-        this.fullViewHeight = height;
-    };
 
     @action setFormatsFromSystem() {
         if (!this.global.validWcs) {
@@ -1124,37 +1151,8 @@ export class OverlayStore {
         return this.labels.hidden && this.numbers.hidden && this.title.hidden;
     }
 
-    public styleString(frame?: FrameStore) {
-        let astString = new ASTSettingsString();
-        astString.addSection(this.global.styleString(frame));
-        astString.addSection(this.title.styleString);
-        astString.addSection(this.grid.styleString);
-        astString.addSection(this.border.styleString);
-        astString.addSection(this.ticks.styleString);
-        astString.addSection(this.axes.styleString);
-        astString.addSection(this.numbers.styleString);
-        astString.addSection(this.labels.styleString);
-
-        astString.add("LabelUp", 0);
-        astString.add("TitleGap", this.titleGap / this.minSize(frame));
-        astString.add("NumLabGap", this.defaultGap / this.minSize(frame));
-        astString.add("TextLabGap", this.cumulativeLabelGap / this.minSize(frame));
-        astString.add("TextGapType", "plot");
-        frame ? astString.addSection(frame.distanceMeasuring?.styleString) : astString.addSection(AppStore.Instance.activeFrame?.distanceMeasuring?.styleString);
-
-        return astString.toString();
-    }
-
-    @action minSize(frame?: FrameStore) {
-        return Math.min(frame.renderWidth || this.renderWidth, frame.renderHeight || this.renderHeight);
-    }
-
     @computed get showNumbers() {
         return this.numbers.show && this.global.labelType === LabelType.Exterior;
-    }
-
-    @computed get defaultGap() {
-        return 5;
     }
 
     @computed get titleGap() {
@@ -1165,10 +1163,6 @@ export class OverlayStore {
         const numGap = this.showNumbers ? this.defaultGap : 0;
         const numHeight = this.showNumbers ? this.numbers.fontSize : 0;
         return numGap + numHeight + this.defaultGap;
-    }
-
-    @computed get base() {
-        return 5;
     }
 
     @computed get numberWidth(): number {
@@ -1183,66 +1177,237 @@ export class OverlayStore {
         return !this.colorbar.visible || (this.colorbar.visible && this.colorbar.position !== "bottom" && this.labels.show) || (this.colorbar.visible && this.colorbar.position === "bottom" && this.colorbar.labelVisible) ? 0 : 10;
     }
 
+    /** The usual left padding in single/multi-panel mode. */
     @computed get paddingLeft(): number {
         return this.base + this.numberWidth + this.labelWidth;
     }
 
+    /** The usual right padding in single/multi-panel mode. */
     @computed get paddingRight(): number {
         return this.base + (this.colorbar.visible && this.colorbar.position === "right" ? this.colorbar.totalWidth : 0);
     }
 
+    /** The usual top padding in single/multi-panel mode. */
     @computed get paddingTop(): number {
         return this.base + (this.title.show ? this.titleGap + this.title.fontSize : this.colorbar.visible && this.colorbar.position === "top" ? this.colorbar.totalWidth : 0);
     }
 
+    /** The usual bottom padding in single/multi-panel mode. */
     @computed get paddingBottom(): number {
         return this.base + this.numberWidth + this.labelWidth + (this.colorbar.visible && this.colorbar.position === "bottom" ? this.colorbar.totalWidth : 0) + this.colorbarHoverInfoHeight;
     }
 
-    @computed get padding(): Padding {
-        return {
-            left: this.paddingLeft,
-            right: this.paddingRight,
-            top: this.paddingTop,
-            bottom: this.paddingBottom
-        };
+    @computed get isWcsCoordinates() {
+        return this.global.explicitSystem !== SystemType.Image;
     }
 
+    @computed get isImgCoordinates() {
+        return this.global.explicitSystem === SystemType.Image;
+    }
+}
+
+export type OverlayStore = ImageViewOverlayStore | PvPreviewOverlayStore;
+
+/** The overlay configuration for a frame in the image view widget. */
+export class ImageViewOverlayStore {
+    constructor() {
+        makeObservable(this);
+    }
+
+    /** The width of the entire widget on which the overlay is displayed. */
+    @computed get fullViewWidth() {
+        return AppStore.Instance.fullViewWidth;
+    }
+
+    /** The height of the entire widget on which the overlay is displayed. */
+    @computed get fullViewHeight() {
+        return AppStore.Instance.fullViewHeight;
+    }
+
+    /** The width of the overlay canvas. */
     @computed get viewWidth() {
         return Math.floor(this.fullViewWidth / AppStore.Instance.imageViewConfigStore.numImageColumns);
     }
 
+    /** The height of the overlay canvas. */
     @computed get viewHeight() {
         return Math.floor(this.fullViewHeight / AppStore.Instance.imageViewConfigStore.numImageRows);
     }
 
+    /** The width of the raster tile canvas (the area inside the border). */
     @computed get renderWidth() {
-        const renderWidth = this.viewWidth - this.paddingLeft - this.paddingRight;
-        return renderWidth > 1 ? renderWidth : 1; // return value > 1 to prevent crashing
+        // return value > 1 to prevent crashing
+        return Math.max(this.viewWidth - OverlaySettings.Instance.paddingLeft - OverlaySettings.Instance.paddingRight, 1);
     }
 
+    /** The height of the raster tile canvas (the area inside the border). */
     @computed get renderHeight() {
-        const renderHeight = this.viewHeight - this.paddingTop - this.paddingBottom;
-        return renderHeight > 1 ? renderHeight : 1; // return value > 1 to prevent crashing
+        // return value > 1 to prevent crashing
+        return Math.max(this.viewHeight - OverlaySettings.Instance.paddingTop - OverlaySettings.Instance.paddingBottom, 1);
     }
 
-    @computed get previewRenderWidth() {
-        return (viewWidth: number) => {
-            if (!viewWidth) {
-                return undefined;
-            }
-            const renderWidth = viewWidth - this.paddingLeft - this.paddingRight;
-            return renderWidth > 1 ? renderWidth : 1; // return value > 1 to prevent crashing
+    /** The minimum size between the raster tile canvas width and height (render width and height). */
+    @computed get minSize() {
+        return Math.min(this.renderWidth, this.renderHeight);
+    }
+
+    /** The space between the edges of the overlay canvas and the raster tile canvas (the area outside the border). */
+    @computed get padding(): Padding {
+        return {
+            left: OverlaySettings.Instance.paddingLeft,
+            right: OverlaySettings.Instance.paddingRight,
+            top: OverlaySettings.Instance.paddingTop,
+            bottom: OverlaySettings.Instance.paddingBottom
         };
     }
 
-    @computed get previewRenderHeight() {
-        return (viewHeight: number) => {
-            if (!viewHeight) {
-                return undefined;
-            }
-            const renderHeight = viewHeight - this.paddingTop - this.paddingBottom;
-            return renderHeight > 1 ? renderHeight : 1; // return value > 1 to prevent crashing
+    defaultStyleString(frame?: FrameStore): ASTSettingsString {
+        let astString = new ASTSettingsString();
+        astString.addSection(OverlaySettings.Instance.global.styleString(frame));
+        astString.addSection(OverlaySettings.Instance.title.styleString);
+        astString.addSection(OverlaySettings.Instance.grid.styleString);
+        astString.addSection(OverlaySettings.Instance.border.styleString);
+        astString.addSection(OverlaySettings.Instance.ticks.styleString);
+        astString.addSection(OverlaySettings.Instance.axes.styleString);
+        astString.addSection(OverlaySettings.Instance.numbers.styleString);
+        astString.addSection(OverlaySettings.Instance.labels.styleString);
+
+        astString.add("LabelUp", 0);
+        astString.add("TitleGap", OverlaySettings.Instance.titleGap / this.minSize);
+        astString.add("NumLabGap", OverlaySettings.Instance.defaultGap / this.minSize);
+        astString.add("TextLabGap", OverlaySettings.Instance.cumulativeLabelGap / this.minSize);
+        astString.add("TextGapType", "plot");
+
+        return astString;
+    }
+
+    styleString(frame?: FrameStore) {
+        return this.defaultStyleString(frame).toString();
+    }
+}
+
+/** The overlay configuration for a PV preview widget. */
+export class PvPreviewOverlayStore extends ImageViewOverlayStore {
+    private readonly previewWidgetStore: PvGeneratorWidgetStore | null = null;
+
+    constructor(previewWidgetStore: PvGeneratorWidgetStore) {
+        super();
+        this.previewWidgetStore = previewWidgetStore;
+    }
+
+    /** The width of the entire widget on which the overlay is displayed. */
+    get fullViewWidth() {
+        return this.previewWidgetStore?.previewFullViewWidth;
+    }
+
+    /** The height of the entire widget on which the overlay is displayed. */
+    get fullViewHeight() {
+        return this.previewWidgetStore?.previewFullViewHeight;
+    }
+
+    /** The width of the overlay canvas. */
+    get viewWidth() {
+        return this.fullViewWidth;
+    }
+
+    /** The height of the overlay canvas. */
+    get viewHeight() {
+        return this.fullViewHeight;
+    }
+}
+
+/** The overlay configuration for the outer part of a frame in channel map mode in the image view widget. */
+export class ChannelMapOuterOverlayStore extends ImageViewOverlayStore {
+    styleString(frame?: FrameStore) {
+        const astString = this.defaultStyleString(frame);
+        astString.add("Grid", false);
+        astString.add("Border", false);
+        astString.add("MajTickLen(1)", 0);
+        astString.add("MinTickLen(1)", 0);
+        astString.add("MajTickLen(2)", 0);
+        astString.add("MinTickLen(2)", 0);
+        astString.add("DrawAxes", false);
+        astString.add("NumLab", false);
+        return astString.toString();
+    }
+}
+
+/** The overlay configuration for the bottom-left channel of a frame in channel map mode in the image view widget. */
+export class ChannelMapInnerOverlayStore extends ImageViewOverlayStore {
+    /** Maximum allowed gap between the overlay canvas in pixels. Cannot be set to a negative value. */
+    @observable private maxGap = 5;
+
+    constructor() {
+        super();
+        makeObservable(this);
+    }
+
+    /**
+     * Sets the maximum allowed gap. Ensures the value is not negative.
+     * @param maxGap - The maximum allowed gap.
+     */
+    @action setMaxGap = (maxGap: number) => {
+        this.maxGap = Math.max(maxGap, 0);
+    };
+
+    /** The width of the overlay canvas. */
+    get viewWidth() {
+        return this.renderWidth + this.padding.left + this.padding.right;
+    }
+
+    /** The height of the overlay canvas. */
+    get viewHeight() {
+        return this.renderHeight + this.padding.top + this.padding.bottom;
+    }
+
+    /** The width of the raster tile canvas (the area inside the border). */
+    get renderWidth() {
+        const overlaySettings = AppStore.Instance.overlaySettings;
+        const outerRenderWidth = this.fullViewWidth - overlaySettings.paddingLeft - overlaySettings.paddingRight;
+        const numColumns = AppStore.Instance.channelMapStore.numColumns;
+        const renderWidth = Math.ceil((outerRenderWidth - this.maxGap * (numColumns - 1)) / numColumns);
+        return Math.max(renderWidth, 1); // return value > 1 to prevent crashing
+    }
+
+    /** The height of the raster tile canvas (the area inside the border). */
+    get renderHeight() {
+        const overlaySettings = AppStore.Instance.overlaySettings;
+        const outerRenderHeight = this.fullViewHeight - overlaySettings.paddingTop - overlaySettings.paddingBottom;
+        const numRows = AppStore.Instance.channelMapStore.numRows;
+        const renderHeight = Math.ceil((outerRenderHeight - this.maxGap * (numRows - 1)) / numRows);
+        return Math.max(renderHeight, 1); // return value > 1 to prevent crashing
+    }
+
+    /** The space between the edges of the overlay canvas and the raster tile canvas (the area outside the border). */
+    get padding(): Padding {
+        return {
+            left: OverlaySettings.Instance.paddingLeft,
+            right: this.maxGap,
+            top: this.maxGap,
+            bottom: OverlaySettings.Instance.paddingBottom
         };
+    }
+
+    /** The horizontal gap between columns. Returns 0 if there's only one column. */
+    @computed get gapX() {
+        const overlaySettings = AppStore.Instance.overlaySettings;
+        const channelMapStore = AppStore.Instance.channelMapStore;
+        const outerRenderWidth = this.fullViewWidth - overlaySettings.paddingLeft - overlaySettings.paddingRight;
+        return channelMapStore.numColumns > 1 ? (outerRenderWidth - this.renderWidth * channelMapStore.numColumns) / (channelMapStore.numColumns - 1) : 0;
+    }
+
+    /** The vertical gap between rows. Returns 0 if there's only one row. */
+    @computed get gapY() {
+        const overlaySettings = AppStore.Instance.overlaySettings;
+        const channelMapStore = AppStore.Instance.channelMapStore;
+        const outerRenderHeight = this.fullViewHeight - overlaySettings.paddingTop - overlaySettings.paddingBottom;
+        return channelMapStore.numRows > 1 ? (outerRenderHeight - this.renderHeight * channelMapStore.numRows) / (channelMapStore.numRows - 1) : 0;
+    }
+
+    styleString(frame?: FrameStore) {
+        const astString = this.defaultStyleString(frame);
+        astString.add("DrawTitle", false);
+        astString.add("TextLab", false);
+        return astString.toString();
     }
 }

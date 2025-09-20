@@ -1,12 +1,11 @@
 import * as React from "react";
-import ReactResizeDetector from "react-resize-detector";
 import {AnchorButton, FormGroup, HTMLSelect, Position, Switch, Tooltip} from "@blueprintjs/core";
 import {CARTA} from "carta-protobuf";
 import {action, computed, makeObservable, observable} from "mobx";
 import {observer} from "mobx-react";
 
-import {MemoryUnit, TaskProgressDialogComponent} from "components/Dialogs";
-import {SafeNumericInput, SpectralSettingsComponent} from "components/Shared";
+import {TaskProgressDialogComponent} from "components/Dialogs";
+import {SafeNumericInput, ScrollShadow, SpectralSettingsComponent} from "components/Shared";
 import {Point2D, SpectralSystem} from "models";
 import {AppStore, DefaultWidgetConfig, HelpType, PreferenceStore, WidgetProps, WidgetsStore} from "stores";
 import {PVAxis, PvGeneratorWidgetStore, RegionId} from "stores/Widgets";
@@ -32,42 +31,6 @@ export class PvGeneratorComponent extends React.Component<WidgetProps> {
             helpType: HelpType.PV_GENERATOR
         };
     }
-
-    public static formatBitValue = (bitValue: number): {value: number; unit: string; bitValue: number} => {
-        let value: number;
-        let unit: string;
-        if (bitValue >= 1e9) {
-            value = parseFloat(toFixed(bitValue / 1e9, 2));
-            unit = MemoryUnit.GB;
-        } else if (bitValue >= 1e6) {
-            value = parseFloat(toFixed(bitValue / 1e6, 2));
-            unit = MemoryUnit.MB;
-        } else if (bitValue >= 1e3) {
-            value = parseFloat(toFixed(bitValue / 1e6, 3));
-            unit = MemoryUnit.MB;
-        } else {
-            value = parseFloat(toFixed(bitValue / 1e6, 4));
-            unit = MemoryUnit.MB;
-        }
-        return {value, unit, bitValue: bitValue};
-    };
-
-    public static getBitValueFromFormatted = (value: number, unit: string): number => {
-        let bitValue = value;
-        if (unit === MemoryUnit.TB) {
-            bitValue = value * 1e12;
-        } else if (unit === MemoryUnit.GB) {
-            bitValue = value * 1e9;
-        } else if (unit === MemoryUnit.MB) {
-            bitValue = value * 1e6;
-        } else if (unit === MemoryUnit.kB) {
-            bitValue = value * 1e3;
-        }
-        return bitValue;
-    };
-
-    @observable width: number;
-    @observable height: number;
 
     @computed get widgetStore(): PvGeneratorWidgetStore {
         const widgetsStore = WidgetsStore.Instance;
@@ -123,11 +86,11 @@ export class PvGeneratorComponent extends React.Component<WidgetProps> {
         return false;
     }
 
-    @computed get estimatedCubeSize(): {value: number; unit: string; bitValue: number} {
+    @computed get estimatedCubeSize(): number {
         const frame = this.widgetStore?.effectiveFrame;
 
         if (!frame) {
-            return {value: 0, unit: "", bitValue: 0};
+            return 0;
         }
 
         // Find percentage of selected channel range
@@ -157,11 +120,12 @@ export class PvGeneratorComponent extends React.Component<WidgetProps> {
             return undefined;
         }
 
-        return PvGeneratorComponent.formatBitValue(estimatedSize);
+        // Return estimated size in GB to be consistent with PreferenceStore.Instance.pvPreviewCubeSizeLimit
+        return parseFloat(toFixed(estimatedSize / 1e9, 2));
     }
 
     @computed get isCubeSizeBelowLimit(): boolean {
-        return this.estimatedCubeSize?.bitValue <= PvGeneratorComponent.getBitValueFromFormatted(PreferenceStore.Instance.pvPreivewCubeSizeLimit, PreferenceStore.Instance.pvPreivewCubeSizeLimitUnit);
+        return this.estimatedCubeSize <= PreferenceStore.Instance.pvPreviewCubeSizeLimit;
     }
 
     constructor(props: WidgetProps) {
@@ -181,11 +145,6 @@ export class PvGeneratorComponent extends React.Component<WidgetProps> {
             }
         }
     }
-
-    @action private onResize = (width: number, height: number) => {
-        this.width = width;
-        this.height = height;
-    };
 
     @action setisValidSpectralRange = (bool: boolean) => {
         this.isValidSpectralRange = bool;
@@ -311,7 +270,7 @@ export class PvGeneratorComponent extends React.Component<WidgetProps> {
                         <br />
                         1. Line region is selected.
                         <br />
-                        2. Preview cube size is less than the threshold ({`${PreferenceStore.Instance.pvPreivewCubeSizeLimit} ${PreferenceStore.Instance.pvPreivewCubeSizeLimitUnit}`}).
+                        2. Preview cube size is less than the threshold ({`${PreferenceStore.Instance.pvPreviewCubeSizeLimit} GB`}).
                     </small>
                 </i>
             </span>
@@ -356,7 +315,7 @@ export class PvGeneratorComponent extends React.Component<WidgetProps> {
                         this.setisValidSpectralRange(true);
                         this.widgetStore.setSpectralSystem(sys as SpectralSystem);
                     }}
-                    disable={frame?.isPVImage}
+                    disable={frame?.isPVImage || !frame?.isSpectralChannel}
                 />
                 {frame && frame.numChannels > 1 && (
                     <FormGroup label="Range" inline={true} labelInfo={`(${frame.spectralUnit})`}>
@@ -371,7 +330,7 @@ export class PvGeneratorComponent extends React.Component<WidgetProps> {
                     </FormGroup>
                 )}
                 <FormGroup className="label-info-group" inline={true} label="Axes order">
-                    <HTMLSelect options={Object.values(this.axesOrder)} onChange={this.handleAxesOrderChanged} />
+                    <HTMLSelect value={this.axesOrder[this.widgetStore.reverse ? "reverse" : "default"]} options={Object.values(this.axesOrder)} onChange={this.handleAxesOrderChanged} />
                 </FormGroup>
                 <FormGroup inline={true} label={"Keep previous PV image(s)"}>
                     <Switch
@@ -411,8 +370,8 @@ export class PvGeneratorComponent extends React.Component<WidgetProps> {
                     </div>
                 </FormGroup>
                 <div className="cube-size-button-group">
-                    <FormGroup className="cube-size-group" inline label="Preview cube size" labelInfo={this.estimatedCubeSize ? `(${this.estimatedCubeSize.unit})` : ""} disabled={!this.estimatedCubeSize}>
-                        <label className="cube-size" style={{color: this.isCubeSizeBelowLimit ? "" : "red"}}>{`${this.estimatedCubeSize?.value ?? ""}`}</label>
+                    <FormGroup className="cube-size-group" inline label="Preview cube size" labelInfo="(GB)" disabled={!this.estimatedCubeSize}>
+                        <label className="cube-size" style={{color: this.isCubeSizeBelowLimit ? "" : "red"}}>{`${this.estimatedCubeSize ?? ""}`}</label>
                     </FormGroup>
                 </div>
                 <div className="generate-button">
@@ -431,19 +390,20 @@ export class PvGeneratorComponent extends React.Component<WidgetProps> {
         );
 
         return (
-            <div className="pv-generator-widget">
-                <div className="pv-generator-panel">{pvImagePanel}</div>
-                <ReactResizeDetector handleWidth handleHeight onResize={this.onResize} refreshMode={"throttle"} refreshRate={33}></ReactResizeDetector>
-                <TaskProgressDialogComponent
-                    isOpen={frame?.isRequestingPV && frame.requestingPVProgress < 1}
-                    progress={frame ? frame.requestingPVProgress : 0}
-                    timeRemaining={appStore.estimatedTaskRemainingTime}
-                    cancellable={true}
-                    onCancel={this.widgetStore.requestingPVCancelled(this.props.id)}
-                    text={"Generating PV"}
-                    isCancelling={frame?.isRequestPVCancelling}
-                />
-            </div>
+            <ScrollShadow>
+                <div className="pv-generator-widget">
+                    <div className="pv-generator-panel">{pvImagePanel}</div>
+                    <TaskProgressDialogComponent
+                        isOpen={frame?.isRequestingPV && frame.requestingPVProgress < 1}
+                        progress={frame ? frame.requestingPVProgress : 0}
+                        timeRemaining={appStore.estimatedTaskRemainingTime}
+                        cancellable={true}
+                        onCancel={this.widgetStore.requestingPVCancelled(this.props.id)}
+                        text={"Generating PV"}
+                        isCancelling={frame?.isRequestPVCancelling}
+                    />
+                </div>
+            </ScrollShadow>
         );
     }
 }

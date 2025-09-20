@@ -56,12 +56,13 @@ export class AnimatorStore {
     };
 
     @flow.bound *startAnimation() {
+        if (this.startAnimationDisabled) {
+            return;
+        }
+
         const appStore = AppStore.Instance;
         const preferenceStore = PreferenceStore.Instance;
         const frame = appStore.activeFrame;
-        if (!frame) {
-            return;
-        }
 
         if (this.animationMode === AnimationMode.FRAME) {
             clearInterval(this.animateHandle);
@@ -79,10 +80,10 @@ export class AnimatorStore {
         const reqView = frame.requiredFrameView;
 
         const croppedReq: FrameView = {
-            xMin: Math.max(0, reqView.xMin),
-            xMax: Math.min(frame.frameInfo.fileInfoExtended.width, reqView.xMax),
-            yMin: Math.max(0, reqView.yMin),
-            yMax: Math.min(frame.frameInfo.fileInfoExtended.height, reqView.yMax),
+            xMin: Math.max(-0.5, reqView.xMin),
+            xMax: Math.min(frame.frameInfo.fileInfoExtended.width - 0.5, reqView.xMax),
+            yMin: Math.max(-0.5, reqView.yMin),
+            yMax: Math.min(frame.frameInfo.fileInfoExtended.height - 0.5, reqView.yMax),
             mip: reqView.mip
         };
         const imageSize: Point2D = {x: frame.frameInfo.fileInfoExtended.width, y: frame.frameInfo.fileInfoExtended.height};
@@ -201,6 +202,28 @@ export class AnimatorStore {
 
     @computed get serverAnimationActive() {
         return this.animationActive && this.animationMode !== AnimationMode.FRAME;
+    }
+
+    /** Whether the animation feature should be disabled. It is disabled when no image is loaded or only one animation step is available, e.g., animating channels of a 2D image. */
+    @computed get startAnimationDisabled() {
+        const frame = AppStore.Instance.activeFrame;
+        if (!frame) {
+            return true;
+        }
+
+        if (this.animationMode === AnimationMode.FRAME && frame.isPreview) {
+            return true;
+        }
+
+        if (this.animationMode === AnimationMode.CHANNEL && frame.frameInfo.fileInfoExtended.depth <= 1) {
+            return true;
+        }
+
+        if (this.animationMode === AnimationMode.STOKES && frame.frameInfo.fileInfoExtended.stokes <= 1) {
+            return true;
+        }
+
+        return false;
     }
 
     private genAnimationFrames = (

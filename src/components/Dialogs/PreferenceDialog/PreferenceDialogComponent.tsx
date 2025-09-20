@@ -1,6 +1,6 @@
 import * as React from "react";
 import {ColorResult} from "react-color";
-import {AnchorButton, Button, Callout, Checkbox, Classes, DialogProps, FormGroup, HTMLSelect, Intent, MenuItem, Position, Radio, RadioGroup, Switch, Tab, Tabs, Tooltip} from "@blueprintjs/core";
+import {AnchorButton, Button, Callout, Checkbox, Classes, Collapse, DialogProps, FormGroup, HTMLSelect, Intent, MenuItem, Position, Radio, RadioGroup, Switch, Tab, Tabs, Tooltip} from "@blueprintjs/core";
 import {Select} from "@blueprintjs/select";
 import {CARTA} from "carta-protobuf";
 import classNames from "classnames";
@@ -9,9 +9,9 @@ import {action, computed, makeObservable, observable} from "mobx";
 import {observer} from "mobx-react";
 import tinycolor from "tinycolor2";
 
-import {DraggableDialogComponent} from "components/Dialogs";
-import {AppToaster, AutoColorPickerComponent, ColormapComponent, ColorPickerComponent, PointShapeSelectComponent, SafeNumericInput, ScalingSelectComponent, SuccessToast} from "components/Shared";
-import {CompressionQuality, CursorInfoVisibility, CursorPosition, Event, FileFilterMode, RegionCreationMode, SPECTRAL_MATCHING_TYPES, SPECTRAL_TYPE_STRING, Theme, TileCache, WCSMatching, WCSType, Zoom, ZoomPoint} from "models";
+import {DraggableDialogComponent, LayoutMappingComponent} from "components/Dialogs";
+import {AppToaster, AutoColorPickerComponent, ColormapComponent, ColorPickerComponent, PointShapeSelectComponent, SafeNumericInput, ScalingSelectComponent, ScrollShadow, SuccessToast} from "components/Shared";
+import {CompressionQuality, ConvertToGB, CursorInfoVisibility, CursorPosition, Event, FileFilterMode, RegionCreationMode, SPECTRAL_MATCHING_TYPES, SPECTRAL_TYPE_STRING, Theme, TileCache, WCSMatching, WCSType, Zoom, ZoomPoint} from "models";
 import {TelemetryMode} from "services";
 import {AppStore, BeamType, DialogId, HelpType, PreferenceKeys, PreferenceStore} from "stores";
 import {ContourGeneratorType, FrameScaling, RegionStore, RenderConfigStore} from "stores/Frame";
@@ -25,6 +25,7 @@ enum PreferenceDialogTabs {
     CONTOUR_CONFIG,
     VECTOR_OVERLAY_CONFIG,
     WCS_OVERLAY_CONFIG,
+    LAYOUT,
     REGION,
     ANNOTATION,
     PERFORMANCE,
@@ -34,17 +35,9 @@ enum PreferenceDialogTabs {
     COMPATIBILITY
 }
 
-export enum MemoryUnit {
-    TB = "TB",
-    GB = "GB",
-    MB = "MB",
-    kB = "kB",
-    B = "B"
-}
-
 const PercentileSelect = Select<string>;
 
-const PV_PREVIEW_CUBE_SIZE_LIMIT = 1000000000; //need to be removed and replaced by backend limit
+const PV_PREVIEW_CUBE_SIZE_LIMIT = 2; //in unit of GB
 
 @observer
 export class PreferenceDialogComponent extends React.Component {
@@ -54,17 +47,15 @@ export class PreferenceDialogComponent extends React.Component {
     };
 
     @computed get pvPreviewCubeSizeMaxValue(): number {
-        if (PreferenceStore.Instance.pvPreivewCubeSizeLimitUnit === MemoryUnit.TB) {
-            return PV_PREVIEW_CUBE_SIZE_LIMIT / 1e12;
-        } else if (PreferenceStore.Instance.pvPreivewCubeSizeLimitUnit === MemoryUnit.GB) {
-            return PV_PREVIEW_CUBE_SIZE_LIMIT / 1e9;
-        } else if (PreferenceStore.Instance.pvPreivewCubeSizeLimitUnit === MemoryUnit.MB) {
-            return PV_PREVIEW_CUBE_SIZE_LIMIT / 1e6;
-        } else if (PreferenceStore.Instance.pvPreivewCubeSizeLimitUnit === MemoryUnit.kB) {
-            return PV_PREVIEW_CUBE_SIZE_LIMIT / 1e3;
-        } else {
-            return PV_PREVIEW_CUBE_SIZE_LIMIT;
-        }
+        return PV_PREVIEW_CUBE_SIZE_LIMIT / ConvertToGB[this.pvPreviewCubeSizeLimitUnit];
+    }
+
+    @computed get pvPreviewCubeSizeMinValue(): number {
+        return 0.1 / ConvertToGB[this.pvPreviewCubeSizeLimitUnit];
+    }
+
+    @computed get showedPvPreviewCubeSizeLimit(): number {
+        return PreferenceStore.Instance.pvPreviewCubeSizeLimit / ConvertToGB[this.pvPreviewCubeSizeLimitUnit];
     }
 
     constructor(props: any) {
@@ -73,7 +64,7 @@ export class PreferenceDialogComponent extends React.Component {
     }
 
     private static readonly DefaultWidth = 800;
-    private static readonly DefaultHeight = 500;
+    private static readonly DefaultHeight = 525;
     private static readonly MinWidth = 650;
     private static readonly MinHeight = 300;
 
@@ -98,8 +89,16 @@ export class PreferenceDialogComponent extends React.Component {
     }, 100);
 
     @action private handlePvPreviewCubeSizeUnitChange = _.throttle(unit => {
-        PreferenceStore.Instance.setPreference(PreferenceKeys.PERFORMANCE_PV_PREVIEW_CUBE_SIZE_LIMIT_UNIT, unit);
+        this.pvPreviewCubeSizeLimitUnit = unit;
     }, 100);
+
+    @action private handlePvPreviewCubeSizeChange = _.throttle((size, unit) => {
+        const storedSize = size * ConvertToGB[this.pvPreviewCubeSizeLimitUnit]; // Convert to GB if necessary
+        PreferenceStore.Instance.setPreference(PreferenceKeys.PERFORMANCE_PV_PREVIEW_CUBE_SIZE_LIMIT, storedSize);
+    }, 100);
+
+    // variable for showing preview cube size unit in the dialog
+    @observable private pvPreviewCubeSizeLimitUnit = "GB";
 
     private reset = () => {
         const preference = PreferenceStore.Instance;
@@ -115,6 +114,9 @@ export class PreferenceDialogComponent extends React.Component {
                 break;
             case PreferenceDialogTabs.WCS_OVERLAY_CONFIG:
                 preference.resetOverlayConfigSettings();
+                break;
+            case PreferenceDialogTabs.LAYOUT:
+                preference.resetLayoutSettings();
                 break;
             case PreferenceDialogTabs.REGION:
                 preference.resetRegionSettings();
@@ -179,15 +181,6 @@ export class PreferenceDialogComponent extends React.Component {
                         <option value={FileFilterMode.Content}>Filter by file content</option>
                         <option value={FileFilterMode.Extension}>Filter by extension</option>
                         <option value={FileFilterMode.All}>All files</option>
-                    </HTMLSelect>
-                </FormGroup>
-                <FormGroup inline={true} label="Initial layout">
-                    <HTMLSelect value={preference.layout} onChange={ev => preference.setPreference(PreferenceKeys.GLOBAL_LAYOUT, ev.currentTarget.value)}>
-                        {layoutStore.orderedLayoutNames.map(layout => (
-                            <option key={layout} value={layout}>
-                                {layout}
-                            </option>
-                        ))}
                     </HTMLSelect>
                 </FormGroup>
                 <FormGroup inline={true} label="Initial cursor position">
@@ -270,7 +263,13 @@ export class PreferenceDialogComponent extends React.Component {
                 </FormGroup>
                 {(preference.scaling === FrameScaling.LOG || preference.scaling === FrameScaling.POWER) && (
                     <FormGroup label={"Alpha"} inline={true}>
-                        <SafeNumericInput buttonPosition={"none"} value={preference.scalingAlpha} onValueChange={value => preference.setPreference(PreferenceKeys.RENDER_CONFIG_SCALING_ALPHA, value)} />
+                        <SafeNumericInput
+                            min={RenderConfigStore.ALPHA_MIN}
+                            max={RenderConfigStore.ALPHA_MAX}
+                            buttonPosition={"none"}
+                            value={preference.scalingAlpha}
+                            onValueChange={value => preference.setPreference(PreferenceKeys.RENDER_CONFIG_SCALING_ALPHA, value)}
+                        />
                     </FormGroup>
                 )}
                 {preference.scaling === FrameScaling.GAMMA && (
@@ -456,11 +455,11 @@ export class PreferenceDialogComponent extends React.Component {
                     </HTMLSelect>
                 </FormGroup>
                 <FormGroup inline={true} label="WCS format">
-                    <HTMLSelect
-                        options={[WCSType.AUTOMATIC, WCSType.DEGREES, WCSType.SEXAGESIMAL]}
-                        value={preference.wcsType}
-                        onChange={(event: React.FormEvent<HTMLSelectElement>) => preference.setPreference(PreferenceKeys.WCS_OVERLAY_WCS_TYPE, event.currentTarget.value)}
-                    />
+                    <HTMLSelect value={preference.wcsType} onChange={(event: React.FormEvent<HTMLSelectElement>) => preference.setPreference(PreferenceKeys.WCS_OVERLAY_WCS_TYPE, event.currentTarget.value)}>
+                        <option value={WCSType.AUTOMATIC}>Automatic</option>
+                        <option value={WCSType.DEGREES}>Degrees</option>
+                        <option value={WCSType.SEXAGESIMAL}>Sexagesimal</option>
+                    </HTMLSelect>
                 </FormGroup>
                 <FormGroup inline={true} label="Colorbar visible">
                     <Switch checked={preference.colorbarVisible} onChange={ev => preference.setPreference(PreferenceKeys.WCS_OVERLAY_COLORBAR_VISIBLE, ev.currentTarget.checked)} />
@@ -543,6 +542,35 @@ export class PreferenceDialogComponent extends React.Component {
             );
         });
 
+        const layoutPanel = (
+            <React.Fragment>
+                <FormGroup inline={true} label="Initial layout">
+                    <HTMLSelect value={preference.layout} onChange={ev => preference.setPreference(PreferenceKeys.LAYOUT, ev.currentTarget.value)}>
+                        {layoutStore.orderedLayoutNames.map(layout => (
+                            <option key={layout} value={layout}>
+                                {layout}
+                            </option>
+                        ))}
+                    </HTMLSelect>
+                </FormGroup>
+                <FormGroup inline={true} label="Dynamic layout">
+                    <Tooltip content={"Apply a linked layout when loaded images based on data type"}>
+                        <Switch checked={preference.dynamicLayoutEnable} onChange={() => preference.setPreference(PreferenceKeys.LAYOUT_DYNAMIC_LAYOUT_ENABLE, !preference.dynamicLayoutEnable)} />
+                    </Tooltip>
+                </FormGroup>
+                <Collapse isOpen={preference.dynamicLayoutEnable}>
+                    <FormGroup inline={true} label="Higher dimension priority">
+                        <Tooltip content={"When disable, the dynamic layout will depend on the last selected file among multiple selected files."}>
+                            <Switch checked={preference.isHighDimPriority} onChange={() => preference.setPreference(PreferenceKeys.LAYOUT_IS_HIGH_DIM_PRIORITY, !preference.isHighDimPriority)} />
+                        </Tooltip>
+                    </FormGroup>
+                    <Collapse isOpen={appStore.dynamicLayoutStore.isMappingExisted || (appStore.activeFrame && appStore.activeFrame.dynamicLayout.ctype !== "")}>
+                        <LayoutMappingComponent orderedLayoutNames={layoutStore.orderedLayoutNames} existLayoutMapping={preference.existLayoutMapping} activeFrame={appStore.activeFrame} />
+                    </Collapse>
+                </Collapse>
+            </React.Fragment>
+        );
+
         const regionSettingsPanel = (
             <React.Fragment>
                 <FormGroup inline={true} label="Color">
@@ -580,7 +608,14 @@ export class PreferenceDialogComponent extends React.Component {
                     </HTMLSelect>
                 </FormGroup>
                 <FormGroup inline={true} label="Region size" labelInfo="(px)">
-                    <SafeNumericInput placeholder="Region size" min={1} value={preference.regionSize} stepSize={1} onValueChange={(value: number) => preference.setPreference(PreferenceKeys.REGION_SIZE, Math.max(1, value))} />
+                    <SafeNumericInput
+                        placeholder="Region size"
+                        min={10}
+                        max={100}
+                        value={preference.regionSize}
+                        stepSize={1}
+                        onValueChange={(value: number) => preference.setPreference(PreferenceKeys.REGION_SIZE, Math.max(10, Math.min(100, value)))}
+                    />
                 </FormGroup>
                 <FormGroup inline={true} label="Creation mode">
                     <RadioGroup selectedValue={preference.regionCreationMode} onChange={ev => preference.setPreference(PreferenceKeys.REGION_CREATION_MODE, ev.currentTarget.value)}>
@@ -638,9 +673,10 @@ export class PreferenceDialogComponent extends React.Component {
                     <SafeNumericInput
                         placeholder="Point size"
                         min={1}
+                        max={100}
                         value={preference.pointAnnotationWidth}
                         stepSize={1}
-                        onValueChange={(value: number) => preference.setPreference(PreferenceKeys.POINT_ANNOTATION_WIDTH, Math.max(1, value))}
+                        onValueChange={(value: number) => preference.setPreference(PreferenceKeys.POINT_ANNOTATION_WIDTH, Math.max(1, Math.min(100, value)))}
                     />
                 </FormGroup>
             </React.Fragment>
@@ -782,14 +818,14 @@ export class PreferenceDialogComponent extends React.Component {
                     <div className="pv-preview-cube-size-limit">
                         <SafeNumericInput
                             placeholder="PV preview cube size limit"
-                            min={1e-12}
+                            min={this.pvPreviewCubeSizeMinValue}
                             max={this.pvPreviewCubeSizeMaxValue}
-                            value={preference.pvPreivewCubeSizeLimit}
-                            majorStepSize={1}
-                            stepSize={1}
-                            onValueChange={value => preference.setPreference(PreferenceKeys.PERFORMANCE_PV_PREVIEW_CUBE_SIZE_LIMIT, value)}
+                            value={this.showedPvPreviewCubeSizeLimit}
+                            majorStepSize={0.5 / ConvertToGB[this.pvPreviewCubeSizeLimitUnit]}
+                            stepSize={0.1 / ConvertToGB[this.pvPreviewCubeSizeLimitUnit]}
+                            onValueChange={value => this.handlePvPreviewCubeSizeChange(value, this.pvPreviewCubeSizeLimitUnit)}
                         />
-                        <HTMLSelect value={preference.pvPreivewCubeSizeLimitUnit} onChange={ev => this.handlePvPreviewCubeSizeUnitChange(ev.target.value)}>
+                        <HTMLSelect value={this.pvPreviewCubeSizeLimitUnit} onChange={ev => this.handlePvPreviewCubeSizeUnitChange(ev.target.value)}>
                             <option key={0} value={"MB"}>
                                 MB
                             </option>
@@ -808,7 +844,7 @@ export class PreferenceDialogComponent extends React.Component {
                     <Checkbox label="Select all" checked={preference.isSelectingAllLogEvents} indeterminate={preference.isSelectingIndeterminateLogEvents} onChange={() => preference.selectAllLogEvents()} />
                 </FormGroup>
                 <FormGroup inline={false} className="log-event-list">
-                    {Event.EVENT_TYPES.map(eventType => (
+                    {Event.EVENT_TYPES.sort((a, b) => Event.getNameFromType(a).localeCompare(Event.getNameFromType(b))).map(eventType => (
                         <Checkbox
                             className="log-event-checkbox"
                             key={eventType}
@@ -910,18 +946,19 @@ export class PreferenceDialogComponent extends React.Component {
             >
                 <div className={Classes.DIALOG_BODY}>
                     <Tabs id="preferenceTabs" vertical={true} selectedTabId={this.selectedTab} onChange={this.setSelectedTab}>
-                        <Tab id={PreferenceDialogTabs.GLOBAL} title="Global" panel={globalPanel} />
-                        <Tab id={PreferenceDialogTabs.RENDER_CONFIG} title="Render Configuration" panel={renderConfigPanel} />
-                        <Tab id={PreferenceDialogTabs.CONTOUR_CONFIG} title="Contour Configuration" panel={contourConfigPanel} />
-                        <Tab id={PreferenceDialogTabs.VECTOR_OVERLAY_CONFIG} title="Vector Overlay Configuration" panel={vectorOverlayConfigPanel} />
-                        <Tab id={PreferenceDialogTabs.WCS_OVERLAY_CONFIG} title="WCS and Image Overlay" panel={overlayConfigPanel} />
-                        <Tab id={PreferenceDialogTabs.CATALOG} title="Catalog" panel={catalogPanel} />
-                        <Tab id={PreferenceDialogTabs.REGION} title="Region" panel={regionSettingsPanel} />
-                        <Tab id={PreferenceDialogTabs.ANNOTATION} title="Annotation" panel={annotationSettingsPanel} />
-                        <Tab id={PreferenceDialogTabs.PERFORMANCE} title="Performance" panel={performancePanel} />
-                        {process.env.REACT_APP_SKIP_TELEMETRY !== "true" && <Tab id={PreferenceDialogTabs.TELEMETRY} title="Telemetry" panel={telemetryPanel} />}
-                        <Tab id={PreferenceDialogTabs.COMPATIBILITY} title="Compatibility" panel={compatibilityPanel} />
-                        <Tab id={PreferenceDialogTabs.LOG_EVENT} title="Log Events" panel={logEventsPanel} />
+                        <Tab id={PreferenceDialogTabs.GLOBAL} title="Global" panel={<ScrollShadow>{globalPanel}</ScrollShadow>} />
+                        <Tab id={PreferenceDialogTabs.RENDER_CONFIG} title="Render Configuration" panel={<ScrollShadow>{renderConfigPanel}</ScrollShadow>} />
+                        <Tab id={PreferenceDialogTabs.CONTOUR_CONFIG} title="Contour Configuration" panel={<ScrollShadow>{contourConfigPanel}</ScrollShadow>} />
+                        <Tab id={PreferenceDialogTabs.VECTOR_OVERLAY_CONFIG} title="Vector Overlay Configuration" panel={<ScrollShadow>{vectorOverlayConfigPanel}</ScrollShadow>} />
+                        <Tab id={PreferenceDialogTabs.WCS_OVERLAY_CONFIG} title="WCS and Image Overlay" panel={<ScrollShadow>{overlayConfigPanel}</ScrollShadow>} />
+                        <Tab id={PreferenceDialogTabs.LAYOUT} title="Layout" panel={<ScrollShadow>{layoutPanel}</ScrollShadow>} />
+                        <Tab id={PreferenceDialogTabs.CATALOG} title="Catalog" panel={<ScrollShadow>{catalogPanel}</ScrollShadow>} />
+                        <Tab id={PreferenceDialogTabs.REGION} title="Region" panel={<ScrollShadow>{regionSettingsPanel}</ScrollShadow>} />
+                        <Tab id={PreferenceDialogTabs.ANNOTATION} title="Annotation" panel={<ScrollShadow>{annotationSettingsPanel}</ScrollShadow>} />
+                        <Tab id={PreferenceDialogTabs.PERFORMANCE} title="Performance" panel={<ScrollShadow>{performancePanel}</ScrollShadow>} />
+                        {process.env.REACT_APP_SKIP_TELEMETRY !== "true" && <Tab id={PreferenceDialogTabs.TELEMETRY} title="Telemetry" panel={<ScrollShadow>{telemetryPanel}</ScrollShadow>} />}
+                        <Tab id={PreferenceDialogTabs.COMPATIBILITY} title="Compatibility" panel={<ScrollShadow>{compatibilityPanel}</ScrollShadow>} />
+                        <Tab id={PreferenceDialogTabs.LOG_EVENT} title="Log Events" panel={<ScrollShadow>{logEventsPanel}</ScrollShadow>} />
                     </Tabs>
                 </div>
                 <div className={Classes.DIALOG_FOOTER}>

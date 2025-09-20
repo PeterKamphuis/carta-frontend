@@ -2,11 +2,11 @@ import * as AST from "ast_wrapper";
 import {CARTA} from "carta-protobuf";
 
 import {Point2D, SPECTRAL_DEFAULT_UNIT, SpectralType, WCSPoint2D} from "models";
-import {NumberFormatType} from "stores";
+import {NumberFormatType, OverlaySettings} from "stores";
 import {FrameStore} from "stores/Frame";
 import {add2D, magDir2D, polygonPerimeter, rotate2D, scale2D, subtract2D, trimFitsComment} from "utilities";
 
-export function isWCSStringFormatValid(wcsString: string, format: NumberFormatType): boolean {
+export function isWCSStringFormatValid(wcsString: string, format: NumberFormatType | undefined): boolean {
     if (!wcsString || !format) {
         return false;
     }
@@ -70,6 +70,29 @@ export function getFormattedWCSPoint(astTransform: AST.FrameSet, pixelCoords: Po
         const wcsCoords = AST.getFormattedCoordinates(astTransform, normVals.x, normVals.y);
         if (wcsCoords) {
             return wcsCoords;
+        }
+    }
+    return null;
+}
+
+export function getUnformattedWCSPoint(astTransform: AST.FrameSet, pixelCoords: Point2D) {
+    if (astTransform) {
+        if (OverlaySettings.Instance.isImgCoordinates) {
+            // need second frame(WCS frame) in the frame to get WCS point
+            AST.setI(astTransform, "Current", 2);
+        }
+
+        const equinox = AST.getString(astTransform, "System") === "FK4" ? "1950.0" : "2000.0";
+        AST.set(astTransform, `Equinox=${equinox}`);
+        const pointWCS = transformPoint(astTransform, pixelCoords);
+        const normVals = AST.normalizeCoordinates(astTransform, pointWCS.x, pointWCS.y);
+
+        if (OverlaySettings.Instance.isImgCoordinates) {
+            AST.setI(astTransform, "Current", 1);
+        }
+
+        if (normVals) {
+            return normVals;
         }
     }
     return null;

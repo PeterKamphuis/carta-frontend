@@ -42,16 +42,19 @@ import {
     CatalogProfileStore,
     CatalogStore,
     CatalogUpdateMode,
+    ChannelMapStore,
     DialogId,
     DialogStore,
+    DynamicLayoutStore,
     FileBrowserStore,
     HelpStore,
+    HipsQueryStore,
     ImageFittingStore,
     ImageViewConfigStore,
     LayoutStore,
     LogEntry,
     LogStore,
-    OverlayStore,
+    OverlaySettings,
     PreferenceKeys,
     PreferenceStore,
     RegionFileType,
@@ -61,8 +64,8 @@ import {
     SystemType,
     WidgetsStore
 } from "stores";
-import {CompassAnnotationStore, CURSOR_REGION_ID, DistanceMeasuringStore, FrameInfo, FrameStore, PointAnnotationStore, RegionStore, RulerAnnotationStore, TextAnnotationStore} from "stores/Frame";
-import {HistogramWidgetStore, SpatialProfileWidgetStore, SpectralProfileWidgetStore, StatsWidgetStore, StokesAnalysisWidgetStore} from "stores/Widgets";
+import {CompassAnnotationStore, CURSOR_REGION_ID, FrameInfo, FrameStore, PointAnnotationStore, RegionStore, RulerAnnotationStore, TextAnnotationStore} from "stores/Frame";
+import {HistogramWidgetStore, PvGeneratorWidgetStore, RegionId as RegionIdType, SpatialProfileWidgetStore, SpectralProfileWidgetStore, StatsWidgetStore, StokesAnalysisWidgetStore} from "stores/Widgets";
 import {distinct, exportScreenshot, getColorForTheme, GetRequiredTiles, getTimestamp, mapToObject, ProtobufProcessing} from "utilities";
 
 import GitCommit from "../../static/gitInfo";
@@ -112,12 +115,16 @@ export class AppStore {
     readonly fileBrowserStore: FileBrowserStore;
     readonly helpStore: HelpStore;
     readonly layoutStore: LayoutStore;
+    readonly dynamicLayoutStore: DynamicLayoutStore;
     readonly snippetStore: SnippetStore;
     readonly logStore: LogStore;
-    readonly overlayStore: OverlayStore;
+    readonly overlaySettings: OverlaySettings;
     readonly preferenceStore: PreferenceStore;
     readonly widgetsStore: WidgetsStore;
     readonly imageFittingStore: ImageFittingStore;
+    readonly channelMapStore: ChannelMapStore;
+    /** Management of HiPS data queries. */
+    readonly hipsQueryStore = HipsQueryStore.Instance;
     /** Configuration of the images in the image view widget. */
     readonly imageViewConfigStore = ImageViewConfigStore.Instance;
 
@@ -153,6 +160,7 @@ export class AppStore {
     @observable imageRatio = 1;
     @observable isExportingImage = false;
     @observable private isCanvasUpdated: boolean;
+    @observable private devicePixelRatio: number;
 
     // dynamic zIndex
     public zIndexManager = new FloatingObjzIndexManager();
@@ -180,8 +188,12 @@ export class AppStore {
     };
 
     // Image view
+    @observable fullViewWidth = 1;
+    @observable fullViewHeight = 1;
+
     @action setImageViewDimensions = (w: number, h: number) => {
-        this.overlayStore.setViewDimension(w, h);
+        this.fullViewWidth = w;
+        this.fullViewHeight = h;
     };
 
     // Auth
@@ -511,6 +523,13 @@ export class AppStore {
     }
 
     /**
+     * This is devicePixelRatio * imageRatio, which is used to make image rendering consistent across different devices.
+     */
+    @computed get pixelRatio(): number {
+        return this.devicePixelRatio * this.imageRatio;
+    }
+
+    /**
      * Adds a frame to the frame array based on the provided parameters.
      *
      * @param ack - The ack message received after opening a file.
@@ -606,7 +625,7 @@ export class AppStore {
         return true;
     };
 
-    @action addPreviewFrame = (ack: any, directory: string, hdu: string) => {
+    @action addPreviewFrame = (ack: any, directory: string, hdu: string, sourceFileId: number, pvGeneratorWidgetStore: PvGeneratorWidgetStore) => {
         if (!ack) {
             return undefined;
         }
@@ -622,10 +641,11 @@ export class AppStore {
             renderMode: CARTA.RenderMode.RASTER,
             beamTable: ack.beamTable,
             generated: true,
-            preview: true
+            preview: true,
+            previewSourceFileId: sourceFileId
         };
 
-        const newFrame = new FrameStore(frameInfo);
+        const newFrame = new FrameStore(frameInfo, pvGeneratorWidgetStore);
 
         if (newFrame) {
             this.previewFrames.set(ack.previewId, newFrame);
@@ -691,6 +711,36 @@ export class AppStore {
         } catch (err) {
             this.alertStore.showAlert(`Error loading file: ${err}`);
             this.endFileLoading();
+            throw err;
+        }
+    }
+
+    /**
+     * Loads a file by HiPS data queries and adds it as a frame.
+     * @param remoteRequest - Parameters for the query.
+     * @returns The added frame.
+     * @throws If there is an error loading the file.
+     */
+    @flow.bound *loadRemoteFile(remoteRequest: CARTA.IRemoteFileRequest) {
+        try {
+            remoteRequest.fileId = this.fileCounter;
+            this.fileCounter++;
+            const ack: CARTA.IRemoteFileResponse = yield this.backendService.requestRemoteFile(remoteRequest);
+            if (!ack.success || !ack.openFileAck) {
+                AppToaster.show({icon: "warning-sign", message: `HiPS data query failed: ${ack.message}`, intent: "danger", timeout: 3000});
+            }
+            if (!this.addFrame(ack.openFileAck, "", false, "", true, true, false)) {
+                AppToaster.show({icon: "warning-sign", message: "HiPS data query failed: Load file failed.", intent: "danger", timeout: 3000});
+            }
+            this.dialogStore.hideDialog(DialogId.OnlineDataQuery);
+            WidgetsStore.ResetWidgetPlotXYBounds(this.widgetsStore.spatialProfileWidgets);
+            WidgetsStore.ResetWidgetPlotXYBounds(this.widgetsStore.spectralProfileWidgets);
+            WidgetsStore.ResetWidgetPlotXYBounds(this.widgetsStore.stokesAnalysisWidgets);
+            // Ensure loading finishes before next file is added
+            yield this.delay(10);
+            return this.getFrame(ack.openFileAck.fileId);
+        } catch (err) {
+            this.alertStore.showAlert(`HiPS data query failed: ${err}`);
             throw err;
         }
     }
@@ -768,26 +818,24 @@ export class AppStore {
     @flow.bound
     *openFile(path: string, filename?: string, hdu?: string, imageArithmetic?: boolean, updateStartingDirectory: boolean = true) {
         this.removeAllFrames();
-        this.overlayStore.global.setSystem(SystemType.Auto);
+        this.overlaySettings.global.setSystem(SystemType.Auto);
         return yield this.loadFile(path, filename, hdu, imageArithmetic, true, updateStartingDirectory);
     }
 
     @flow.bound
-    *saveFile(directory: string, filename: string, fileType: CARTA.FileType, regionId?: number, channels?: number[], stokes?: number[], shouldDropDegenerateAxes?: boolean, restFreq?: number) {
+    *saveFile(directory: string, filename: string, fileType: CARTA.FileType, regionId?: number, channels?: number[], stokes?: number[], shouldDropDegenerateAxes?: boolean, restFreq?: number, overwrite: boolean = false) {
         if (!this.activeFrame) {
             throw new Error("No active image");
         }
         this.startFileSaving();
         const fileId = this.activeFrame.frameInfo.fileId;
         try {
-            const ack = yield this.backendService.saveFile(fileId, directory, filename, fileType, regionId, channels, stokes, !shouldDropDegenerateAxes, restFreq);
+            const ack = yield this.backendService.saveFile(fileId, directory, filename, fileType, regionId, channels, stokes, !shouldDropDegenerateAxes, restFreq, overwrite);
             AppToaster.show({icon: "saved", message: `${filename} saved.`, intent: "success", timeout: 3000});
             this.fileBrowserStore.hideFileBrowser();
             this.endFileSaving();
             return ack.fileId;
         } catch (err) {
-            console.error(err);
-            AppToaster.show({icon: "warning-sign", message: err, intent: "danger", timeout: 3000});
             this.endFileSaving();
             throw err;
         }
@@ -910,7 +958,6 @@ export class AppStore {
             }
 
             this.widgetsStore.pvGeneratorWidgets.get(pvGeneratorWidgetId)?.removePreviewFrame(parseInt(pvGeneratorWidgetId.split("-")[2]));
-            this.widgetsStore.removeFloatingWidget(pvGeneratorWidgetId);
             this.previewFrames.delete(fileId);
 
             // clear existing requirements for the frame
@@ -979,7 +1026,7 @@ export class AppStore {
                 } else {
                     // update overlay defaults from the last frame
                     if (removedFrameIsLastFrame) {
-                        this.overlayStore.setDefaultsFromFrame(this.frames[this.frames.length - 1]);
+                        this.overlaySettings.setDefaultsFromFrame(this.frames[this.frames.length - 1]);
                     }
                 }
 
@@ -1260,10 +1307,11 @@ export class AppStore {
      * @param coordType - The coordinate system used in the exported region file.
      * @param fileType - The type of the exported region file.
      * @param exportRegions - The indices of the regions to be exported.
+     * @param overwrite - Whether to allow overwriting existing files.
      * @param targetFrame - The target frame containing the regions. If not provided, the active frame is used.
      */
     @flow.bound
-    *exportRegions(directory: string, file: string, coordType: CARTA.CoordinateType, fileType: RegionFileType, exportRegions: number[], targetFrame?: FrameStore) {
+    *exportRegions(directory: string, file: string, coordType: CARTA.CoordinateType, fileType: RegionFileType, exportRegions: number[], overwrite: boolean = false, targetFrame?: FrameStore) {
         const frame = targetFrame ?? this.activeFrame;
         // Prevent exporting if only the cursor region exists
         if (!frame?.regionSet?.regions || frame.regionSet.regions.length <= 1 || exportRegions?.length < 1) {
@@ -1301,14 +1349,47 @@ export class AppStore {
         }
 
         try {
-            yield this.backendService.exportRegion(directory, file, fileType, coordType, frame.frameInfo.fileId, regionStyles);
+            yield this.backendService.exportRegion(directory, file, fileType, coordType, frame.frameInfo.fileId, regionStyles, overwrite);
             AppToaster.show(SuccessToast("saved", `Exported regions for ${frame.filename} using ${coordType === CARTA.CoordinateType.WORLD ? "world" : "pixel"} coordinates`));
             this.fileBrowserStore.hideFileBrowser();
         } catch (err) {
-            console.error(err);
-            AppToaster.show(ErrorToast(err));
+            throw err;
         }
     }
+
+    /**
+     * Deletes all regions including annotations.
+     */
+    @action deleteAllRegions = () => {
+        this.activeFrame.regionSet.regionMap.forEach(x => {
+            if (x.regionId !== CURSOR_REGION_ID) {
+                this.deleteRegion(x);
+            }
+        });
+        AppToaster.show(SuccessToast("console", `Regions deleted successfully.`, 3000));
+    };
+
+    /**
+     * Deletes all annotations.
+     */
+    @action deleteAllAnnotations = () => {
+        this.activeFrame.regionSet.regionMap.forEach(x => {
+            if (x.regionId !== CURSOR_REGION_ID && x.isAnnotation) {
+                this.deleteRegion(x);
+            }
+        });
+    };
+
+    /**
+     * Deletes all regular regions.
+     */
+    @action deleteAllRegularRegions = () => {
+        this.activeFrame.regionSet.regionMap.forEach(x => {
+            if (x.regionId !== CURSOR_REGION_ID && !x.isAnnotation) {
+                this.deleteRegion(x);
+            }
+        });
+    };
 
     @action requestCubeHistogram = (fileId: number = -1) => {
         const frame = this.getFrame(fileId);
@@ -1431,9 +1512,11 @@ export class AppStore {
                     // The initial next() function call executes the FrameStore.updatePreviewData until the first yield keyword
                     pvGeneratorWidgetStore.previewFrame.updatePreviewDataGenerator.next();
                 } else {
-                    pvGeneratorWidgetStore.setPreviewFrame(this.addPreviewFrame(ack.previewData, this.fileBrowserStore.startingDirectory, ""));
+                    const newFrame = this.addPreviewFrame(ack.previewData, this.fileBrowserStore.startingDirectory, "", message.fileId, pvGeneratorWidgetStore);
+                    pvGeneratorWidgetStore.setPreviewFrame(newFrame);
                     pvGeneratorWidgetStore.setPvCutRegionId(message.regionId);
                     WidgetsStore.Instance.createFloatingSettingsWidget("PV Preview Viewer", id, PvGeneratorComponent.WIDGET_CONFIG.type);
+                    pvGeneratorWidgetStore.onResizePreviewWidget(PvGeneratorComponent.WIDGET_CONFIG.defaultWidth, PvGeneratorComponent.WIDGET_CONFIG.defaultHeight);
                 }
             } else {
                 AppToaster.show({icon: "warning-sign", message: "Load preview failed.", intent: "danger", timeout: 3000});
@@ -1497,7 +1580,11 @@ export class AppStore {
                 if (ack.modelImage) {
                     if (this.addFrame(CARTA.OpenFileAck.create(ack.modelImage), this.fileBrowserStore.startingDirectory, false, "", true)) {
                         this.fileCounter++;
-                        frame?.addFittingModelImage(this.getFrame(ack.modelImage.fileId));
+                        const newModelFrame = this.getFrame(ack.modelImage.fileId);
+                        frame?.addFittingModelImage(newModelFrame);
+                        if (newModelFrame && frame === this.spatialReference) {
+                            newModelFrame.setSpatialReference(this.spatialReference);
+                        }
                     } else {
                         AppToaster.show({icon: "warning-sign", message: "Load model image failed.", intent: "danger", timeout: 3000});
                     }
@@ -1505,11 +1592,18 @@ export class AppStore {
                 if (ack.residualImage) {
                     if (this.addFrame(CARTA.OpenFileAck.create(ack.residualImage), this.fileBrowserStore.startingDirectory, false, "", true)) {
                         this.fileCounter++;
-                        frame?.addFittingResidualImage(this.getFrame(ack.residualImage.fileId));
+                        const newResidualFrame = this.getFrame(ack.residualImage.fileId);
+                        frame?.addFittingResidualImage(newResidualFrame);
+                        if (newResidualFrame && frame === this.spatialReference) {
+                            newResidualFrame.setSpatialReference(this.spatialReference);
+                        }
                     } else {
                         AppToaster.show({icon: "warning-sign", message: "Load residual image failed.", intent: "danger", timeout: 3000});
                     }
                 }
+            }
+            if (ack.resultValues?.length < message.initialValues?.length) {
+                AppToaster.show(WarningToast(`Image fitting: generated initial values of ${ack.resultValues.length} component(s) instead of ${message.initialValues.length}.`));
             }
             if (ack.message) {
                 AppToaster.show(WarningToast(`Image fitting: ${ack.message}.`));
@@ -1551,15 +1645,14 @@ export class AppStore {
     private updateASTColors() {
         if (this.astReady) {
             const astColors = [
-                getColorForTheme(this.overlayStore.global.color),
-                getColorForTheme(this.overlayStore.title.color),
-                getColorForTheme(this.overlayStore.grid.color),
-                getColorForTheme(this.overlayStore.border.color),
-                getColorForTheme(this.overlayStore.ticks.color),
-                getColorForTheme(this.overlayStore.axes.color),
-                getColorForTheme(this.overlayStore.numbers.color),
-                getColorForTheme(this.overlayStore.labels.color),
-                getColorForTheme(this.activeFrame ? this.activeFrame.distanceMeasuring?.color : DistanceMeasuringStore.DEFAULT_COLOR)
+                getColorForTheme(this.overlaySettings.global.color),
+                getColorForTheme(this.overlaySettings.title.color),
+                getColorForTheme(this.overlaySettings.grid.color),
+                getColorForTheme(this.overlaySettings.border.color),
+                getColorForTheme(this.overlaySettings.ticks.color),
+                getColorForTheme(this.overlaySettings.axes.color),
+                getColorForTheme(this.overlaySettings.numbers.color),
+                getColorForTheme(this.overlaySettings.labels.color)
             ];
             AST.setColors(astColors);
         }
@@ -1647,24 +1740,11 @@ export class AppStore {
 
             frame.channel = update.channel;
             frame.stokes = update.stokes;
-            if (this.imageViewConfigStore.visibleFrames.includes(frame)) {
-                // Calculate new required frame view (cropped to file size)
-                const reqView = frame.requiredFrameView;
 
-                const croppedReq: FrameView = {
-                    xMin: Math.max(0, reqView.xMin),
-                    xMax: Math.min(frame.frameInfo.fileInfoExtended.width, reqView.xMax),
-                    yMin: Math.max(0, reqView.yMin),
-                    yMax: Math.min(frame.frameInfo.fileInfoExtended.height, reqView.yMax),
-                    mip: reqView.mip
-                };
-                const imageSize: Point2D = {x: frame.frameInfo.fileInfoExtended.width, y: frame.frameInfo.fileInfoExtended.height};
-                const tiles = GetRequiredTiles(croppedReq, imageSize, {x: 256, y: 256});
-                const midPointImageCoords = {x: (reqView.xMax + reqView.xMin) / 2.0, y: (reqView.yMin + reqView.yMax) / 2.0};
-                // TODO: dynamic tile size
-                const tileSizeFullRes = reqView.mip * 256;
-                const midPointTileCoords = {x: midPointImageCoords.x / tileSizeFullRes - 0.5, y: midPointImageCoords.y / tileSizeFullRes - 0.5};
-
+            if (this.channelMapStore.channelMapEnabled) {
+                this.tileService.updateChannelMapActiveChannel(frame.frameInfo.fileId, frame.channel, frame.stokes);
+            } else if (this.imageViewConfigStore.visibleFrames.includes(frame)) {
+                const [tiles, midPointTileCoords] = frame.requiredTiles;
                 // If BUNIT = km/s, adopted compressionQuality is set to 32 regardless the preferences setup
                 const bunitVariant = ["km/s", "km s-1", "km s^-1", "km.s-1"];
                 const compressionQuality = bunitVariant.includes(frame.headerUnit) ? Math.max(this.preferenceStore.imageCompressionQuality, 32) : this.preferenceStore.imageCompressionQuality;
@@ -1709,13 +1789,13 @@ export class AppStore {
 
     private updateView = (tiles: TileCoordinate[], fileId: number, channel: number, stokes: number, focusPoint: Point2D, headerUnit: string) => {
         const isAnimating = this.animatorStore.serverAnimationActive;
-        if (isAnimating) {
+        if (isAnimating && !this.channelMapStore.channelMapEnabled) {
             this.backendService.addRequiredTiles(
                 fileId,
                 tiles.map(t => t.encode()),
                 this.preferenceStore.animationCompressionQuality
             );
-        } else {
+        } else if (!this.channelMapStore.channelMapEnabled) {
             // If BUNIT = km/s, adopted compressionQuality is set to 32 regardless the preferences setup
             const bunitVariant = ["km/s", "km s-1", "km s^-1", "km.s-1"];
             const compressionQuality = bunitVariant.includes(headerUnit) ? Math.max(this.preferenceStore.imageCompressionQuality, 32) : this.preferenceStore.imageCompressionQuality;
@@ -1737,7 +1817,7 @@ export class AppStore {
                 if (!this.layoutStore.applyLayout(this.preferenceStore.layout)) {
                     AlertStore.Instance.showAlert(`Applying preference layout "${this.preferenceStore.layout}" failed! Resetting preference layout to default.`);
                     this.layoutStore.applyLayout(PresetLayout.DEFAULT);
-                    this.preferenceStore.setPreference(PreferenceKeys.GLOBAL_LAYOUT, PresetLayout.DEFAULT);
+                    this.preferenceStore.setPreference(PreferenceKeys.LAYOUT, PresetLayout.DEFAULT);
                 }
                 await this.loadDefaultFiles();
                 this.setCursorFrozen(this.preferenceStore.isCursorFrozen);
@@ -1787,12 +1867,14 @@ export class AppStore {
         this.fileBrowserStore = FileBrowserStore.Instance;
         this.helpStore = HelpStore.Instance;
         this.layoutStore = LayoutStore.Instance;
+        this.dynamicLayoutStore = DynamicLayoutStore.Instance;
         this.snippetStore = SnippetStore.Instance;
         this.logStore = LogStore.Instance;
         this.preferenceStore = PreferenceStore.Instance;
-        this.overlayStore = OverlayStore.Instance;
+        this.overlaySettings = OverlaySettings.Instance;
         this.widgetsStore = WidgetsStore.Instance;
         this.imageFittingStore = ImageFittingStore.Instance;
+        this.channelMapStore = ChannelMapStore.Instance;
 
         this.astReady = false;
         this.cartaComputeReady = false;
@@ -1803,6 +1885,8 @@ export class AppStore {
         this.pendingChannelHistograms = new Map<string, CARTA.IRegionHistogramData>();
         this.initRequirements();
         this.momentToMatch = true;
+
+        this.devicePixelRatio = devicePixelRatio;
 
         AST.onReady.then(
             action(() => {
@@ -1898,11 +1982,11 @@ export class AppStore {
                 const viewUpdates: ViewUpdate[] = [];
                 for (const frame of this.imageViewConfigStore.visibleFrames) {
                     const reqView = frame.requiredFrameView;
-                    let croppedReq: FrameView = {
-                        xMin: Math.max(0, reqView.xMin),
-                        xMax: Math.min(frame.frameInfo.fileInfoExtended.width, reqView.xMax),
-                        yMin: Math.max(0, reqView.yMin),
-                        yMax: Math.min(frame.frameInfo.fileInfoExtended.height, reqView.yMax),
+                    const croppedReq: FrameView = {
+                        xMin: Math.max(-0.5, reqView.xMin),
+                        xMax: Math.min(frame.frameInfo.fileInfoExtended.width - 0.5, reqView.xMax),
+                        yMin: Math.max(-0.5, reqView.yMin),
+                        yMax: Math.min(frame.frameInfo.fileInfoExtended.height - 0.5, reqView.yMax),
                         mip: reqView.mip
                     };
 
@@ -1976,20 +2060,13 @@ export class AppStore {
         reaction(
             () => this.activeImage,
             image => {
-                if (image) {
-                    if (image.type !== ImageType.PV_PREVIEW) {
-                        this.widgetsStore.updateImageWidgetTitle(this.layoutStore.dockedLayout);
+                this.widgetsStore.updateRenderConfigSettingsVisibility();
+                if (image && image.type === ImageType.FRAME) {
+                    const frame = image.store;
+                    this.catalogStore.resetActiveCatalogFile(frame?.id);
+                    if (this.syncContourToFrame) {
+                        this.contourDataSource = frame;
                     }
-
-                    if (image.type === ImageType.FRAME) {
-                        const frame = image.store;
-                        this.catalogStore.resetActiveCatalogFile(frame?.id);
-                        if (this.syncContourToFrame) {
-                            this.contourDataSource = frame;
-                        }
-                    }
-                } else {
-                    this.widgetsStore.updateImageWidgetTitle(this.layoutStore.dockedLayout);
                 }
             }
         );
@@ -2043,6 +2120,38 @@ export class AppStore {
         autorun(() => {
             this.activateStatsPanel(this.preferenceStore.statsPanelEnabled);
         });
+
+        // listen devicePixelRatio
+        let remove = null;
+        const updatePixelRatio = () => {
+            if (remove != null) {
+                remove();
+            }
+            const mqString = `(resolution: ${window.devicePixelRatio}dppx)`;
+            const media = matchMedia(mqString);
+            media.addEventListener("change", updatePixelRatio);
+            remove = () => {
+                media.removeEventListener("change", updatePixelRatio);
+            };
+
+            this.handleDevicePixelRatioChange(this.devicePixelRatio);
+        };
+        updatePixelRatio();
+    }
+
+    // update devicePixelRatio and make the image size invariant on screen
+    @action private handleDevicePixelRatioChange(prevDevicePixelRatio: number) {
+        this.frames.forEach(frame => {
+            if (frame === this.spatialReference || !frame.spatialReference) {
+                frame.setZoom((frame.zoomLevel * devicePixelRatio) / prevDevicePixelRatio, true);
+            }
+        });
+
+        this.previewFrames.forEach((previewFrameStore, previewFrameId) => {
+            previewFrameStore.setZoom((previewFrameStore.zoomLevel * devicePixelRatio) / prevDevicePixelRatio, true);
+        });
+
+        this.devicePixelRatio = devicePixelRatio;
     }
 
     // region Subscription handlers
@@ -2110,7 +2219,7 @@ export class AppStore {
         // TODO: update histograms directly if the image is not active!
 
         // Add histogram to pending histogram list
-        if (regionHistogramData.regionId === -1 && !regionHistogramData.config.fixedNumBins && !regionHistogramData.config.fixedBounds) {
+        if (regionHistogramData.regionId === RegionIdType.IMAGE && !regionHistogramData.config.fixedNumBins && !regionHistogramData.config.fixedBounds) {
             const key = `${regionHistogramData.fileId}_${regionHistogramData.stokes}_${regionHistogramData.channel}`;
             this.pendingChannelHistograms.set(key, regionHistogramData);
         } else if (regionHistogramData.regionId === -2) {
@@ -2123,6 +2232,11 @@ export class AppStore {
                     this.updateTaskProgress(regionHistogramData.progress);
                 }
             }
+        }
+
+        // update the render config widget histogram for channel map view mode
+        if (this.channelMapStore.channelMapEnabled && regionHistogramData.regionId === RegionIdType.IMAGE && regionHistogramData.stokes === this.activeFrame?.stokes) {
+            this.updateHistogram(regionHistogramData.fileId, regionHistogramData.stokes, regionHistogramData.channel);
         }
     };
 
@@ -2156,8 +2270,12 @@ export class AppStore {
             }
         }
 
+        this.updateHistogram(tileStreamDetails.fileId, tileStreamDetails.stokes, tileStreamDetails.channel);
+    };
+
+    updateHistogram = (fileId: number, stokes: number, channel: number) => {
         // Apply pending channel histogram
-        const key = `${tileStreamDetails.fileId}_${tileStreamDetails.stokes}_${tileStreamDetails.channel}`;
+        const key = `${fileId}_${stokes}_${channel}`;
         const pendingHistogram = this.pendingChannelHistograms.get(key);
         if (pendingHistogram?.histograms) {
             const updatedFrame = this.getFrame(pendingHistogram.fileId);
@@ -2167,9 +2285,10 @@ export class AppStore {
                 updatedFrame.renderConfig.setStokesIndex(stokesIndex);
                 updatedFrame.renderConfig.setHistChannel(pendingHistogram.channel);
                 updatedFrame.renderConfig.updateChannelHistogram(channelHist);
-                updatedFrame.channel = tileStreamDetails.channel;
-                updatedFrame.stokes = tileStreamDetails.stokes;
+                updatedFrame.channel = channel;
+                updatedFrame.stokes = stokes;
             }
+
             this.pendingChannelHistograms.delete(key);
         }
     };
@@ -2541,6 +2660,28 @@ export class AppStore {
                 }
             }
 
+            if (workspace.colorBlendingImages) {
+                workspace.colorBlendingImages.sort((a, b) => a.imageListIndex - b.imageListIndex);
+
+                for (const {imageListIndex, selectedFrameId, alpha} of workspace.colorBlendingImages) {
+                    const colorBlending = this.imageViewConfigStore.createColorBlending();
+                    while (colorBlending.selectedFrames.length) {
+                        colorBlending.deleteSelectedFrame(0);
+                    }
+                    colorBlending.setAlpha(0, alpha[0]);
+
+                    for (let i = 0; i < selectedFrameId.length; i++) {
+                        const frame = this.frameMap.get(frameIdMap.get(selectedFrameId[i]));
+                        if (frame) {
+                            colorBlending.addSelectedFrame(frame);
+                            colorBlending.setAlpha(colorBlending.selectedFrames.length, alpha[i + 1]);
+                        }
+                    }
+
+                    this.reorderFrame(this.imageViewConfigStore.imageNum - 1, imageListIndex, 1);
+                }
+            }
+
             // Sync up raster scaling once all images are loaded and configured
             if (this.rasterScalingReference) {
                 this.rasterScalingReference.renderConfig.updateSiblings();
@@ -2564,6 +2705,7 @@ export class AppStore {
             frontendVersion: CARTA_INFO.version,
             description: "Workspace exported from CARTA",
             files: [],
+            colorBlendingImages: [],
             references: {},
             date: Date.now() / 1000
         };
@@ -2669,6 +2811,11 @@ export class AppStore {
             }
 
             workspace.files.push(workspaceFile);
+        }
+
+        for (const [id, colorBlending] of this.imageViewConfigStore.colorBlendingImageMap) {
+            const index = this.imageViewConfigStore.getImageListIndex(ImageType.COLOR_BLENDING, id);
+            workspace.colorBlendingImages.push({imageListIndex: index, selectedFrameId: colorBlending.selectedFrames.map(f => f.id), alpha: colorBlending.alpha});
         }
 
         if (hasTemporaryFiles) {
@@ -3117,7 +3264,7 @@ export class AppStore {
             this.setImageRatio(imageRatio);
             this.waitForImageData().then(() => {
                 const backgroundColor = this.preferenceStore.transparentImageBackground ? "rgba(255, 255, 255, 0)" : this.darkTheme ? "rgba(0, 0, 0, 1)" : Colors.WHITE;
-                const composedCanvas = getImageViewCanvas(this.overlayStore.padding, this.overlayStore.colorbar.position, backgroundColor);
+                const composedCanvas = getImageViewCanvas(this.activeFrame.overlayStore.padding, this.overlaySettings.colorbar.position, backgroundColor);
                 if (composedCanvas) {
                     composedCanvas.toBlob(blob => {
                         const link = document.createElement("a") as HTMLAnchorElement;
@@ -3134,10 +3281,9 @@ export class AppStore {
     };
 
     updateLayerPixelRatio = layerRef => {
-        const pixelRatio = devicePixelRatio * this.imageRatio;
         const canvas = layerRef?.current?.getCanvas();
-        if (canvas && canvas.pixelRatio !== pixelRatio) {
-            canvas.setPixelRatio(pixelRatio);
+        if (canvas && canvas.pixelRatio !== this.pixelRatio) {
+            canvas.setPixelRatio(this.pixelRatio);
         }
     };
 
@@ -3156,7 +3302,7 @@ export class AppStore {
 
     getImageDataUrl = (backgroundColor: string) => {
         if (this.activeFrame) {
-            const composedCanvas = getImageViewCanvas(this.overlayStore.padding, this.overlayStore.colorbar.position, backgroundColor);
+            const composedCanvas = getImageViewCanvas(this.activeFrame.overlayStore.padding, this.overlaySettings.colorbar.position, backgroundColor);
             if (composedCanvas) {
                 return composedCanvas.toDataURL();
             }
@@ -3339,9 +3485,4 @@ export class AppStore {
             regionProfileStoreMap.get(regionId)?.resetProfilesProgress();
         });
     };
-
-    // helper function for getting the current devicePixelRatio value
-    get pixelRatio() {
-        return devicePixelRatio;
-    }
 }

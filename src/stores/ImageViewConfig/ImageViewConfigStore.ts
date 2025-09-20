@@ -152,7 +152,16 @@ export class ImageViewConfigStore {
     /** The index of the current page in the image view widget. */
     @computed get currentImagePage() {
         const activeImage = AppStore.Instance.activeImage;
-        if (!this.imageNum || !activeImage || activeImage.type === ImageType.PV_PREVIEW) {
+        if (!this.imageNum || !activeImage) {
+            return 0;
+        }
+
+        if (activeImage.type === ImageType.PV_PREVIEW) {
+            const sourceFileId = activeImage.store.frameInfo.previewSourceFileId;
+            if (sourceFileId !== undefined) {
+                const index = this.getImageListIndex(ImageType.FRAME, sourceFileId);
+                return Math.floor(index / this.imagesPerPage);
+            }
             return 0;
         }
 
@@ -199,6 +208,10 @@ export class ImageViewConfigStore {
 
     /** The number of columns in the image view widget. */
     @computed get numImageColumns() {
+        if (AppStore.Instance.channelMapStore.channelMapEnabled) {
+            return 1;
+        }
+
         switch (this.imagePanelMode) {
             case ImagePanelMode.None:
                 return 1;
@@ -211,6 +224,10 @@ export class ImageViewConfigStore {
 
     /** The number of rows in the image view widget. */
     @computed get numImageRows() {
+        if (AppStore.Instance.channelMapStore.channelMapEnabled) {
+            return 1;
+        }
+
         switch (this.imagePanelMode) {
             case ImagePanelMode.None:
                 return 1;

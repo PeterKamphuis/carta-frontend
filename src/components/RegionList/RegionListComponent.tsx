@@ -1,6 +1,5 @@
 import * as React from "react";
 import {CSSProperties} from "react";
-import ReactResizeDetector from "react-resize-detector";
 import {FixedSizeList, ListOnItemsRenderedProps} from "react-window";
 import {AnchorButton, ButtonGroup, Classes, Icon, NonIdealState, Position, Spinner, Tooltip} from "@blueprintjs/core";
 import {CARTA} from "carta-protobuf";
@@ -8,6 +7,7 @@ import classNames from "classnames";
 import {action, computed, makeObservable, observable, reaction} from "mobx";
 import {observer} from "mobx-react";
 
+import {ResizeDetector} from "components/Shared";
 import {CustomIcon} from "icons/CustomIcons";
 import {AppStore, BrowserMode, DefaultWidgetConfig, DialogId, DialogStore, FileBrowserStore, HelpType, WidgetProps} from "stores";
 import {FrameStore, RegionsOpacity, RegionStore, WCS_PRECISION} from "stores/Frame";
@@ -152,6 +152,14 @@ export class RegionListComponent extends React.Component<WidgetProps> {
         DialogStore.Instance.showDialog(DialogId.Region);
     };
 
+    private handleRegionDeleteClicked = async () => {
+        const appStore = AppStore.Instance;
+        const confirmed = await appStore.alertStore.showInteractiveAlert("Are you sure you want to delete all regions?");
+        if (confirmed) {
+            await appStore.deleteAllRegions();
+        }
+    };
+
     @action private onListRendered = (view: ListOnItemsRenderedProps) => {
         // Update view bounds
         if (view && this.firstVisibleRow !== view.overscanStopIndex && this.lastVisibleRow !== view.overscanStopIndex) {
@@ -168,19 +176,21 @@ export class RegionListComponent extends React.Component<WidgetProps> {
 
         if (!frame) {
             return (
-                <div className="region-list-widget">
-                    <NonIdealState icon={"folder-open"} title={"No file loaded"} description={"Load a file using the menu"} />
-                    <ReactResizeDetector handleWidth handleHeight onResize={this.onResize} />
-                </div>
+                <ResizeDetector onResize={this.onResize}>
+                    <div className="region-list-widget">
+                        <NonIdealState icon={"folder-open"} title={"No file loaded"} description={"Load a file using the menu"} />
+                    </div>
+                </ResizeDetector>
             );
         }
 
         if (appStore.fileBrowserStore.isLoadingDialogOpen) {
             return (
-                <div className="region-list-widget">
-                    <NonIdealState icon={<Spinner />} title={"Loading regions"} description={"Region list will be shown when regions have been loaded"} />
-                    <ReactResizeDetector handleWidth handleHeight onResize={this.onResize} />
-                </div>
+                <ResizeDetector onResize={this.onResize}>
+                    <div className="region-list-widget">
+                        <NonIdealState icon={<Spinner />} title={"Loading regions"} description={"Region list will be shown when regions have been loaded"} />
+                    </div>
+                </ResizeDetector>
             );
         }
 
@@ -235,14 +245,18 @@ export class RegionListComponent extends React.Component<WidgetProps> {
 
         const selectedRegion = frame.regionSet.selectedRegion;
 
+        // openOnTargetFocus={false} is to prevent the tooltip popup after the warning message.
         const floatRenderer = () => {
             return (
                 <ButtonGroup className="float" style={{width: RegionListComponent.ACTION_COLUMN_DEFAULT_WIDTH * 3}}>
+                    <Tooltip content="Delete all regions" position={Position.TOP_LEFT} openOnTargetFocus={false}>
+                        <AnchorButton icon={"trash"} onClick={this.handleRegionDeleteClicked} style={{cursor: "pointer"}} disabled={this.validRegions.length <= 1} />
+                    </Tooltip>
                     <Tooltip content="Import regions" position={Position.TOP_LEFT}>
                         <AnchorButton icon={"cloud-download"} onClick={this.handleRegionImportClicked} style={{cursor: "pointer"}} />
                     </Tooltip>
                     <Tooltip content="Export all regions" position={Position.BOTTOM}>
-                        {this.validRegions.length > 1 ? <AnchorButton icon="cloud-upload" onClick={this.handleRegionExportAllClicked} style={{cursor: "pointer"}} /> : <AnchorButton icon="cloud-upload" style={{opacity: 0.4}} />}
+                        <AnchorButton icon="cloud-upload" onClick={this.handleRegionExportAllClicked} style={{cursor: "pointer"}} disabled={this.validRegions.length <= 1} />
                     </Tooltip>
                 </ButtonGroup>
             );
@@ -442,25 +456,26 @@ export class RegionListComponent extends React.Component<WidgetProps> {
         };
 
         return (
-            <div className="region-list-widget">
-                <div className={classNames("region-list-table", {[Classes.DARK]: darkTheme})} data-testid="region-list-table">
-                    <FixedSizeList itemSize={RegionListComponent.HEADER_ROW_HEIGHT} height={RegionListComponent.HEADER_ROW_HEIGHT} itemCount={1} width="100%" className="list-header">
-                        {headerRenderer(this.regionsVisibility, this.regionsLock)}
-                    </FixedSizeList>
-                    <FixedSizeList
-                        onItemsRendered={this.onListRendered}
-                        height={tableHeight - RegionListComponent.HEADER_ROW_HEIGHT - padding * 2}
-                        itemCount={this.validRegions.length}
-                        itemSize={RegionListComponent.ROW_HEIGHT}
-                        width="100%"
-                        ref={this.listRef}
-                    >
-                        {rowRenderer}
-                    </FixedSizeList>
+            <ResizeDetector onResize={this.onResize}>
+                <div className="region-list-widget">
+                    <div className={classNames("region-list-table", {[Classes.DARK]: darkTheme})} data-testid="region-list-table">
+                        <FixedSizeList itemSize={RegionListComponent.HEADER_ROW_HEIGHT} height={RegionListComponent.HEADER_ROW_HEIGHT} itemCount={1} width="100%" className="list-header">
+                            {headerRenderer(this.regionsVisibility, this.regionsLock)}
+                        </FixedSizeList>
+                        <FixedSizeList
+                            onItemsRendered={this.onListRendered}
+                            height={tableHeight - RegionListComponent.HEADER_ROW_HEIGHT - padding * 2}
+                            itemCount={this.validRegions.length}
+                            itemSize={RegionListComponent.ROW_HEIGHT}
+                            width="100%"
+                            ref={this.listRef}
+                        >
+                            {rowRenderer}
+                        </FixedSizeList>
+                    </div>
+                    {floatRenderer()}
                 </div>
-                <ReactResizeDetector handleWidth handleHeight onResize={this.onResize} />
-                {floatRenderer()}
-            </div>
+            </ResizeDetector>
         );
     }
 }
@@ -470,9 +485,9 @@ export class RegionWcsCenter extends React.Component<{region: RegionStore; frame
     public render() {
         // dummy variables related to wcs to trigger re-render
         /* eslint-disable @typescript-eslint/no-unused-vars */
-        const system = AppStore.Instance.overlayStore.global.explicitSystem;
-        const formatX = AppStore.Instance.overlayStore.numbers.formatTypeX;
-        const formatY = AppStore.Instance.overlayStore.numbers.formatTypeY;
+        const system = AppStore.Instance.overlaySettings.global.explicitSystem;
+        const formatX = AppStore.Instance.overlaySettings.numbers.formatTypeX;
+        const formatY = AppStore.Instance.overlaySettings.numbers.formatTypeY;
         /* eslint-enable @typescript-eslint/no-unused-vars */
 
         const frame = this.props.frame;

@@ -4,7 +4,6 @@ import {action, makeObservable, observable} from "mobx";
 export enum HelpType {
     // Dialogs
     CONTOUR = "Contour Configuration",
-    DISTANCE_MEASUREMENT = "Distance Measurement",
     PREFERENCES = "Preferences",
     FILE_BROWSER = "File Browser",
     FILE_INFO = "File Header",
@@ -28,6 +27,7 @@ export enum HelpType {
     PLACEHOLDER = "Placeholder",
     REGION_LIST = "Region List",
     RENDER_CONFIG = "Render Configuration",
+    RENDER_CONFIG_COLOR_BLENDING = "Color Blending Render Configuration",
     RENDER_CONFIG_SETTINGS = "Render Configuration Settings",
     SPATIAL_PROFILER = "Spatial Profiler",
     SPATIAL_PROFILER_SETTINGS_STYLING = "Spatial Profiler Style Settings",
@@ -55,7 +55,8 @@ export enum HelpType {
     CATALOG_SETTINGS_ORIENTATION = "Catalog Orientation Settings",
     SPECTRAL_LINE_QUERY = "Spectral Line Query",
     PV_GENERATOR = "PV Generator",
-    CURSOR_INFO = "Cursor Information"
+    CURSOR_INFO = "Cursor Information",
+    CHANNEL_MAP_CONTROL = "Channel Map Control"
 }
 
 export class HelpStore {

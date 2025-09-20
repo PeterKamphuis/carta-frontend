@@ -1,11 +1,10 @@
 import * as React from "react";
-import ReactResizeDetector from "react-resize-detector";
 import {AnchorButton, Button, ButtonGroup, Classes, ControlGroup, HTMLSelect, IconName, Menu, MenuItem, NonIdealState, NumberRange, Popover, Position, Radio, RangeSlider, Slider, Tooltip} from "@blueprintjs/core";
 import classNames from "classnames";
 import {action, makeObservable, observable} from "mobx";
 import {observer} from "mobx-react";
 
-import {SafeNumericInput} from "components/Shared";
+import {ResizeDetector, SafeNumericInput, ScrollShadow} from "components/Shared";
 import {AnimationMode, AnimatorStore, AppStore, DefaultWidgetConfig, HelpType, PlayMode, WidgetProps} from "stores";
 
 import "./AnimatorComponent.scss";
@@ -212,8 +211,8 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
 
         let channelSlider, channelRangeSlider, stokesSlider, imageSlider;
         // Image Control
-        if (numImages > 1) {
-            const imageIndex = appStore.activeImageIndex;
+        const imageIndex = appStore.activeImageIndex;
+        if (numImages > 1 && imageIndex !== -1) {
             const numIndices = 5;
             const imageStep = numImages > 10 ? Math.floor((numImages - 1) / (numIndices - 1)) : 1;
             const imageTickPre = numImages - 1 - 4 * imageStep < imageStep / 2 ? [0, imageStep, 2 * imageStep, 3 * imageStep, numImages - 1] : [0, imageStep, 2 * imageStep, 3 * imageStep, 4 * imageStep, numImages - 1];
@@ -341,9 +340,10 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
                     </Menu>
                 }
                 position={Position.TOP}
+                disabled={appStore.channelMapStore.channelMapEnabled}
             >
                 <Tooltip content="Playback mode" position={Position.TOP}>
-                    <AnchorButton icon={this.getPlayModeIcon()} disabled={appStore.animatorStore.animationActive} data-testid="animator-playback-mode-button">
+                    <AnchorButton icon={this.getPlayModeIcon()} disabled={appStore.animatorStore.animationActive || appStore.channelMapStore.channelMapEnabled} data-testid="animator-playback-mode-button">
                         {!iconOnly && "Mode"}
                     </AnchorButton>
                 </Tooltip>
@@ -359,12 +359,12 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
                     {!iconOnly && "Prev"}
                 </Button>
                 {appStore.animatorStore.animationActive && (
-                    <Button icon={"stop"} onClick={appStore.animatorStore.stopAnimation} data-testid="animator-play-stop-button">
+                    <Button icon={"stop"} onClick={appStore.animatorStore.stopAnimation} disabled={appStore.channelMapStore.channelMapEnabled} data-testid="animator-play-stop-button">
                         {!iconOnly && "Stop"}
                     </Button>
                 )}
                 {!appStore.animatorStore.animationActive && (
-                    <Button icon={"play"} onClick={appStore.animatorStore.startAnimation} data-testid="animator-play-stop-button">
+                    <Button icon={"play"} onClick={appStore.animatorStore.startAnimation} disabled={appStore.animatorStore.startAnimationDisabled || appStore.channelMapStore.channelMapEnabled} data-testid="animator-play-stop-button">
                         {!iconOnly && "Play"}
                     </Button>
                 )}
@@ -379,7 +379,11 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
 
         const numericControl = (
             <ControlGroup className="playback-numeric-control">
-                <HTMLSelect options={[NumericInputType.FrameRate, NumericInputType.Step]} onChange={ev => this.onNumericInputTypeChange(ev.currentTarget.value as NumericInputType)} />
+                <HTMLSelect
+                    disabled={appStore.animatorStore.animationActive || appStore.channelMapStore.channelMapEnabled}
+                    options={[NumericInputType.FrameRate, NumericInputType.Step]}
+                    onChange={ev => this.onNumericInputTypeChange(ev.currentTarget.value as NumericInputType)}
+                />
                 {this.numericInputType === NumericInputType.FrameRate ? (
                     <SafeNumericInput
                         value={appStore.animatorStore.frameRate}
@@ -389,7 +393,7 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
                         minorStepSize={1}
                         majorStepSize={1}
                         onValueChange={appStore.animatorStore.setFrameRate}
-                        disabled={appStore.animatorStore.animationActive}
+                        disabled={appStore.animatorStore.animationActive || appStore.channelMapStore.channelMapEnabled}
                         data-testid="animator-control-input"
                     />
                 ) : (
@@ -401,7 +405,7 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
                         minorStepSize={1}
                         majorStepSize={1}
                         onValueChange={appStore.animatorStore.setStep}
-                        disabled={appStore.animatorStore.animationActive}
+                        disabled={appStore.animatorStore.animationActive || appStore.channelMapStore.channelMapEnabled}
                         data-testid="animator-control-input"
                     />
                 )}
@@ -409,26 +413,29 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
         );
 
         return (
-            <div className="animator-widget">
-                {!activeFrame && <NonIdealState icon={"folder-open"} title={"No file loaded"} description={"Load a file using the menu"} />}
-                {activeFrame && (
-                    <div className={playbackClass}>
-                        {playbackButtons}
-                        {playbackModeButton}
-                        {numericControl}
-                    </div>
-                )}
-                {activeFrame &&
-                    this.width > 0 && ( // temporary fix for broken range slider, issue #1078
-                        <div className="animator-sliders">
-                            {imageSlider}
-                            {channelSlider}
-                            {channelRangeSlider}
-                            {stokesSlider}
-                        </div>
-                    )}
-                <ReactResizeDetector handleWidth handleHeight onResize={this.onResize} refreshMode={"throttle"} refreshRate={33}></ReactResizeDetector>
-            </div>
+            <ResizeDetector onResize={this.onResize} throttleTime={33}>
+                <div className="animator-widget">
+                    <ScrollShadow>
+                        {!activeFrame && <NonIdealState icon={"folder-open"} title={"No file loaded"} description={"Load a file using the menu"} />}
+                        {activeFrame && (
+                            <div className={playbackClass}>
+                                {playbackButtons}
+                                {playbackModeButton}
+                                {numericControl}
+                            </div>
+                        )}
+                        {activeFrame &&
+                            this.width > 0 && ( // temporary fix for broken range slider, issue #1078
+                                <div className="animator-sliders">
+                                    {imageSlider}
+                                    {channelSlider}
+                                    {channelRangeSlider}
+                                    {stokesSlider}
+                                </div>
+                            )}
+                    </ScrollShadow>
+                </div>
+            </ResizeDetector>
         );
     }
 }

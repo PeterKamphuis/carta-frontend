@@ -8,8 +8,8 @@ import {action, computed, makeObservable, observable, reaction} from "mobx";
 import {observer} from "mobx-react";
 
 import {DraggableDialogComponent} from "components/Dialogs";
-import {POLARIZATION_LABELS} from "models";
-import {AppStore, BrowserMode, DialogId, HelpType} from "stores";
+import {HyperCubeCtypeTransform, POLARIZATION_LABELS} from "models";
+import {AppStore, BrowserMode, DialogId, HelpType, PreferenceStore} from "stores";
 
 import "./StokesDialogComponent.scss";
 
@@ -181,6 +181,7 @@ export class StokesDialogComponent extends React.Component {
                         columnWidths={[440, 120]}
                         enableRowResizing={false}
                         cellRendererDependencies={[rerenderCheck]}
+                        getCellClipboardData={null}
                     >
                         {[fileName, stokesDropDown]}
                     </Table2>
@@ -201,16 +202,27 @@ export class StokesDialogComponent extends React.Component {
     }
 
     private loadSelectedFiles = async () => {
+        const {activeFrame, dynamicLayoutStore, fileBrowserStore, layoutStore} = AppStore.Instance;
+
         let stokeFiles = [];
         this.stokes.forEach(file => {
             stokeFiles.push(file);
         });
+
+        if (PreferenceStore.Instance.dynamicLayoutEnable) {
+            const hyperCubeCtype = HyperCubeCtypeTransform(fileBrowserStore.selectedFilesCtypes);
+            dynamicLayoutStore.matchLayoutMapping(hyperCubeCtype);
+            if (dynamicLayoutStore.dynamicLayoutName && layoutStore.layoutExists(dynamicLayoutStore.dynamicLayoutName)) {
+                layoutStore.applyLayout(dynamicLayoutStore.dynamicLayoutName);
+            }
+        }
+
         await this.loadFile(stokeFiles)
             .then(() => {
-                AppStore.Instance.activeFrame?.setStokesFiles(stokeFiles);
+                activeFrame?.setStokesFiles(stokeFiles);
             })
             .catch(() => {
-                AppStore.Instance.activeFrame?.setStokesFiles([]);
+                activeFrame?.setStokesFiles([]);
             });
     };
 

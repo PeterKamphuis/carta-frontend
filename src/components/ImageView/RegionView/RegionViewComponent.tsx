@@ -9,9 +9,9 @@ import {observer} from "mobx-react";
 
 import {ImageViewLayer} from "components";
 import {CursorInfo, Point2D, ZoomPoint} from "models";
-import {AppStore, DialogId, OverlayStore, PreferenceStore} from "stores";
+import {AppStore, DialogId, PreferenceStore} from "stores";
 import {FrameStore, RegionMode, RegionStore} from "stores/Frame";
-import {add2D, average2D, isAstBadPoint, length2D, pointDistanceSquared, scale2D, subtract2D, transformPoint} from "utilities";
+import {add2D, average2D, length2D, pointDistanceSquared, scale2D, subtract2D, transformPoint} from "utilities";
 
 import {CompassAnnotation, RulerAnnotation} from "./CompassAndRulerAnnotationComponent";
 import {CursorRegionComponent} from "./CursorRegionComponent";
@@ -24,7 +24,6 @@ import "./RegionViewComponent.scss";
 
 export interface RegionViewComponentProps {
     frame: FrameStore;
-    overlaySettings: OverlayStore;
     dragPanningEnabled: boolean;
     docked: boolean;
     width: number;
@@ -109,10 +108,15 @@ export class RegionViewComponent extends React.Component<RegionViewComponentProp
         if (prevProps.width !== this.props.width || prevProps.height !== this.props.height) {
             const stage = this.stageRef.current;
             if (stage) {
-                const offset = {x: (this.props.width - prevProps.width) / 2, y: (this.props.height - prevProps.height) / 2};
+                const offset = {x: ((this.props.width - prevProps.width) / 2) * this.props.frame.aspectRatio, y: (this.props.height - prevProps.height) / 2};
                 const zoom = stage.scaleX();
                 const mutatedOffset = scale2D(offset, (1 - zoom) / zoom);
                 this.stageResizeOffset = add2D(this.stageResizeOffset, mutatedOffset);
+
+                const frame = this.props.frame?.spatialReference ?? this.props.frame;
+                if (frame) {
+                    this.syncStage(frame.centerMovement, frame.zoomLevel);
+                }
             }
         }
     }
@@ -125,13 +129,6 @@ export class RegionViewComponent extends React.Component<RegionViewComponentProp
         }
     }, 100);
 
-    updateDistanceMeasureFinishPos = _.throttle((x: number, y: number) => {
-        const frame = this.props.frame;
-        const imagePos = this.getDistanceMeasureImagePos(x, y);
-        frame.distanceMeasuring.setFinish(imagePos.x, imagePos.y);
-        frame.distanceMeasuring.updateTransformedPos(frame.spatialTransform);
-    }, 100);
-
     private getCursorPosImageSpace = (offsetX: number, offsetY: number): Point2D => {
         const frame = this.props.frame;
         let cursorPosImageSpace = canvasToTransformedImagePos(offsetX, offsetY, frame, this.props.width, this.props.height);
@@ -139,17 +136,6 @@ export class RegionViewComponent extends React.Component<RegionViewComponentProp
             cursorPosImageSpace = transformPoint(frame.spatialTransformAST, cursorPosImageSpace, true);
         }
         return cursorPosImageSpace;
-    };
-
-    private getDistanceMeasureImagePos = (offsetX: number, offsetY: number): Point2D => {
-        const frame = this.props.frame;
-        const frameView = frame.spatialReference ? frame.spatialReference.requiredFrameView : frame.requiredFrameView;
-        const spatialTransform = frame.spatialReference?.spatialTransform ?? frame.spatialTransform;
-        let imagePos = canvasToImagePos(offsetX, offsetY, frameView, this.props.width, this.props.height, spatialTransform);
-        if (frame.spatialReference) {
-            imagePos = frame.spatialTransform.transformCoordinate(imagePos, false);
-        }
-        return imagePos;
     };
 
     @action private regionCreationStart = (mouseEvent: MouseEvent) => {
@@ -501,32 +487,12 @@ export class RegionViewComponent extends React.Component<RegionViewComponentProp
             return;
         }
 
-        if (frame.wcsInfo && AppStore.Instance?.activeLayer === ImageViewLayer.DistanceMeasuring && !isSecondaryClick) {
-            const imagePos = this.getDistanceMeasureImagePos(mouseEvent.offsetX, mouseEvent.offsetY);
-            const wcsPos = transformPoint(frame.wcsInfo, imagePos);
-            const dist = frame.distanceMeasuring;
-            if (!isAstBadPoint(wcsPos) && dist) {
-                if (!dist.isCreating && !dist.showCurve) {
-                    dist.setStart(imagePos.x, imagePos.y);
-                    dist.setIsCreating(true);
-                } else if (dist.isCreating) {
-                    dist.setFinish(imagePos.x, imagePos.y);
-                    dist.updateTransformedPos(frame.spatialTransform);
-                    dist.setIsCreating(false);
-                } else {
-                    dist.resetPos();
-                    dist.setStart(imagePos.x, imagePos.y);
-                    dist.setIsCreating(true);
-                }
-            }
-        }
-
         // Deselect selected region if in drag-to-pan mode and user clicks on the stage
         if (this.props.dragPanningEnabled && !isSecondaryClick) {
             frame.regionSet.deselectRegion();
         }
 
-        if (frame.wcsInfo && this.props.onClickToCenter && ((!this.props.dragPanningEnabled && AppStore.Instance?.activeLayer !== ImageViewLayer.DistanceMeasuring) || isSecondaryClick)) {
+        if (frame.wcsInfo && this.props.onClickToCenter && (!this.props.dragPanningEnabled || isSecondaryClick)) {
             const cursorPosImageSpace = canvasToTransformedImagePos(mouseEvent.offsetX, mouseEvent.offsetY, frame, this.props.width, this.props.height);
             this.props.onClickToCenter(frame.getCursorInfo(cursorPosImageSpace));
         }
@@ -664,9 +630,6 @@ export class RegionViewComponent extends React.Component<RegionViewComponentProp
                     break;
             }
         } else {
-            if (frame.wcsInfo && AppStore.Instance?.activeLayer === ImageViewLayer.DistanceMeasuring && frame.distanceMeasuring?.isCreating) {
-                this.updateDistanceMeasureFinishPos(mouseEvent.offsetX, mouseEvent.offsetY);
-            }
             if (!AppStore.Instance.cursorFrozen) {
                 this.updateCursorPos(mouseEvent.offsetX, mouseEvent.offsetY);
                 if (this.props.frame !== AppStore.Instance.hoveredFrame) {
@@ -739,7 +702,7 @@ export class RegionViewComponent extends React.Component<RegionViewComponentProp
         }
 
         let cursor: string;
-        if (regionSet.mode === RegionMode.CREATING || (AppStore.Instance?.activeLayer === ImageViewLayer.DistanceMeasuring && !frame.isPreview)) {
+        if (regionSet.mode === RegionMode.CREATING) {
             cursor = "crosshair";
         } else if (regionSet.selectedRegion && regionSet.selectedRegion.editing) {
             cursor = "move";
@@ -799,7 +762,6 @@ class RegionComponents extends React.Component<{frame: FrameStore; regions: Regi
             const regionSet = this.props.frame?.regionSet;
             return regions.map(r => {
                 const commonProps = {
-                    key: r.regionId,
                     region: r,
                     frame: this.props.frame,
                     layerWidth: this.props.width,
@@ -811,15 +773,15 @@ class RegionComponents extends React.Component<{frame: FrameStore; regions: Regi
                 };
 
                 if (r.regionType === CARTA.RegionType.POINT || r.regionType === CARTA.RegionType.ANNPOINT) {
-                    return <PointRegionComponent {...commonProps} />;
+                    return <PointRegionComponent {...commonProps} key={r.regionId} />;
                 } else if (r.regionType === CARTA.RegionType.ANNCOMPASS) {
-                    return <CompassAnnotation {...commonProps} />;
+                    return <CompassAnnotation {...commonProps} key={r.regionId} />;
                 } else if (r.regionType === CARTA.RegionType.ANNRULER) {
-                    return <RulerAnnotation {...commonProps} />;
+                    return <RulerAnnotation {...commonProps} key={r.regionId} />;
                 } else {
                     const allProps = {
                         ...commonProps,
-                        listening: regionSet.mode !== RegionMode.CREATING && AppStore.Instance?.activeLayer !== ImageViewLayer.DistanceMeasuring,
+                        listening: regionSet.mode !== RegionMode.CREATING,
                         isRegionCornerMode: AppStore.Instance.preferenceStore.isRegionCornerMode
                     };
                     return r.regionType === CARTA.RegionType.POLYGON ||
@@ -829,9 +791,9 @@ class RegionComponents extends React.Component<{frame: FrameStore; regions: Regi
                         r.regionType === CARTA.RegionType.ANNLINE ||
                         r.regionType === CARTA.RegionType.ANNVECTOR ||
                         r.regionType === CARTA.RegionType.ANNPOLYLINE ? (
-                        <LineSegmentRegionComponent {...allProps} />
+                        <LineSegmentRegionComponent {...allProps} key={r.regionId} />
                     ) : (
-                        <SimpleShapeRegionComponent {...allProps} />
+                        <SimpleShapeRegionComponent {...allProps} key={r.regionId} />
                     );
                 }
             });
