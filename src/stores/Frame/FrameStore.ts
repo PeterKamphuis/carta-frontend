@@ -476,11 +476,78 @@ export class FrameStore {
     @computed get currentSliceAxisInfo(): string {
         // Return axis info for the current slice axis based on cube view mode
         const position = this.currentSlicePosition;
-        const axisLabel = this.currentSliceAxisLabel;
+        const axis = this.currentSliceAxis;
         
-        // For now, return a simple coordinate display
-        // TODO: Implement full WCS transformation for X and Y axes like depthAxisInfo
-        return `${axisLabel}: ${position}`;
+        // For Z-axis (depth), use the existing depthAxisInfo logic
+        if (axis === 2) {
+            return this.depthAxisInfo;
+        }
+        
+        // For X and Y axes, try to do WCS transformation if available
+        if (this.wcsInfo3D && !this.isProjDistort) {
+            try {
+                let wcsAxisIndex: number;
+                let wcsFormat: string;
+                let coordinateLabel: string;
+                
+                if (axis === 0) { // X axis
+                    wcsAxisIndex = this.dirX; // Use dirX for proper axis mapping
+                    wcsFormat = AppStore.Instance.overlaySettings.numbers.formatTypeX;
+                    // Get coordinate type from header
+                    const entries = this.frameInfo.fileInfoExtended.headerEntries;
+                    const ctypeEntry = entries.find(entry => entry.name.includes(`CTYPE${this.dirXNumber}`));
+                    const ctypeValue = ctypeEntry?.value ?? "";
+                    if (ctypeValue.match(/^RA/i)) {
+                        coordinateLabel = "RA";
+                    } else if (ctypeValue.match(/^DEC/i)) {
+                        coordinateLabel = "DEC";
+                    } else {
+                        coordinateLabel = ctypeValue || "X";
+                    }
+                } else { // Y axis
+                    wcsAxisIndex = this.dirY; // Use dirY for proper axis mapping
+                    wcsFormat = AppStore.Instance.overlaySettings.numbers.formatTypeY;
+                    // Get coordinate type from header
+                    const entries = this.frameInfo.fileInfoExtended.headerEntries;
+                    const ctypeEntry = entries.find(entry => entry.name.includes(`CTYPE${this.dirYNumber}`));
+                    const ctypeValue = ctypeEntry?.value ?? "";
+                    if (ctypeValue.match(/^RA/i)) {
+                        coordinateLabel = "RA";
+                    } else if (ctypeValue.match(/^DEC/i)) {
+                        coordinateLabel = "DEC";
+                    } else {
+                        coordinateLabel = ctypeValue || "Y";
+                    }
+                }
+                
+                AST.set(this.wcsInfo3D, `Format(${wcsAxisIndex})=${wcsFormat}.${WCS_PRECISION}`);
+                
+                // Transform pixel coordinate to world coordinate
+                let x = axis === 0 ? position : 0;
+                let y = axis === 1 ? position : 0;
+                let z = axis === 2 ? position : 0;
+                
+                const wcs = AST.transform3DPoint(this.wcsInfo3D, x, y, z, true);
+                let wcsVal: number;
+                
+                if (axis === 0) {
+                    wcsVal = this.dirX > this.dirY && wcs.x < 0 ? wcs.x + 2 * Math.PI : wcs.x;
+                } else {
+                    wcsVal = this.dirX > this.dirY && wcs.y < 0 ? wcs.y + 2 * Math.PI : wcs.y;
+                }
+                
+                const wcsString = AST.format(this.wcsInfo3D, wcsAxisIndex, wcsVal);
+                return `${coordinateLabel}:\n${wcsString}`;
+            } catch (error) {
+                // Fall back to pixel coordinates if WCS transformation fails
+                const coordinateLabel = axis === 0 ? "X" : "Y";
+                return `${coordinateLabel}: ${position}`;
+            }
+        }
+        
+        // Fallback for non-WCS or when projection is distorted
+        const coordinateLabel = axis === 0 ? "X" : "Y";
+        return `${coordinateLabel}: ${position}`;
     }
 
     @computed get displayDimensions(): Point2D {
@@ -2213,6 +2280,9 @@ export class FrameStore {
             // Reset to middle slice for the new orientation
             const middleSlice = Math.floor(maxSlice / 2);
             this.setSlice(middleSlice, true);
+            
+            // Update animation range for the new axis
+            this.animationChannelRange = [0, maxSlice];
             
             console.log(`Reset to slice ${middleSlice} of ${maxSlice} for ${getSliceAxisName(mode)} axis`);
         }

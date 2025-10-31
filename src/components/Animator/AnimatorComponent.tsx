@@ -16,9 +16,9 @@ function getCubeViewDisplayName(mode: CARTA.CubeViewMode): string {
         case CARTA.CubeViewMode.VIEW_MODE_XY:
             return "XY (Default)";
         case CARTA.CubeViewMode.VIEW_MODE_YZ:
-            return "YZ (Side View)";
+            return "YZ";
         case CARTA.CubeViewMode.VIEW_MODE_XZ:
-            return "XZ (Front View)";
+            return "XZ";
         default:
             return "XY (Default)";
     }
