@@ -93,6 +93,33 @@ import {
     trimFitsComment
 } from "utilities";
 
+// Simple helper functions for cube view mode
+function getAxisConfig(mode: CARTA.CubeViewMode): {x: number, y: number, slice: number} {
+    switch (mode) {
+        case CARTA.CubeViewMode.VIEW_MODE_XY:
+            return { x: 0, y: 1, slice: 2 };
+        case CARTA.CubeViewMode.VIEW_MODE_YZ:
+            return { x: 1, y: 2, slice: 0 };
+        case CARTA.CubeViewMode.VIEW_MODE_XZ:
+            return { x: 0, y: 2, slice: 1 };
+        default:
+            return { x: 0, y: 1, slice: 2 };
+    }
+}
+
+function getSliceAxisName(mode: CARTA.CubeViewMode): string {
+    switch (mode) {
+        case CARTA.CubeViewMode.VIEW_MODE_XY:
+            return "Z";
+        case CARTA.CubeViewMode.VIEW_MODE_YZ:
+            return "X";
+        case CARTA.CubeViewMode.VIEW_MODE_XZ:
+            return "Y";
+        default:
+            return "Z";
+    }
+}
+
 export interface FrameInfo {
     fileId: number;
     directory: string;
@@ -193,6 +220,7 @@ export class FrameStore {
     @observable requiredStokes: number;
     @observable requiredChannel: number;
     @observable animationChannelRange: NumberRange;
+    @observable cubeViewMode: CARTA.CubeViewMode;
     @observable currentFrameView: FrameView;
     @observable currentCompressionQuality: number;
     @observable contourStores: Map<number, ContourStore>;
@@ -371,15 +399,16 @@ export class FrameStore {
     @computed get requiredTiles(): [TileCoordinate[], Point2D] {
         // Calculate new required frame view (cropped to file size)
         const reqView = this.requiredFrameView;
+        const displayDims = this.displayDimensions;
 
         const croppedReq: FrameView = {
             xMin: Math.max(-0.5, reqView.xMin),
-            xMax: Math.min(this.frameInfo.fileInfoExtended.width - 0.5, reqView.xMax),
+            xMax: Math.min(displayDims.x - 0.5, reqView.xMax),
             yMin: Math.max(-0.5, reqView.yMin),
-            yMax: Math.min(this.frameInfo.fileInfoExtended.height - 0.5, reqView.yMax),
+            yMax: Math.min(displayDims.y - 0.5, reqView.yMax),
             mip: reqView.mip
         };
-        const imageSize: Point2D = {x: this.frameInfo.fileInfoExtended.width, y: this.frameInfo.fileInfoExtended.height};
+        const imageSize: Point2D = {x: displayDims.x, y: displayDims.y};
         const tiles = GetRequiredTiles(croppedReq, imageSize, {x: 256, y: 256});
         const midPointImageCoords = {x: (reqView.xMax + reqView.xMin) / 2.0, y: (reqView.yMin + reqView.yMax) / 2.0};
         // TODO: dynamic tile size
@@ -391,6 +420,88 @@ export class FrameStore {
 
     @computed get fovSize(): Point2D {
         return {x: this.requiredFrameView?.xMax - this.requiredFrameView?.xMin, y: this.requiredFrameView?.yMax - this.requiredFrameView?.yMin};
+    }
+
+    // Slice orientation computed properties
+    @computed get currentSliceAxis(): number {
+        const axisConfig = getAxisConfig(this.cubeViewMode);
+        return axisConfig.slice;
+    }
+
+    @computed get currentSliceAxisSize(): number {
+        const axis = this.currentSliceAxis;
+        switch (axis) {
+            case 0: // X axis
+                return this.frameInfo.fileInfoExtended.width;
+            case 1: // Y axis
+                return this.frameInfo.fileInfoExtended.height;
+            case 2: // Z axis (default)
+            default:
+                return this.frameInfo.fileInfoExtended.depth;
+        }
+    }
+
+    @computed get currentSliceAxisLabel(): string {
+        return getSliceAxisName(this.cubeViewMode);
+    }
+
+    @computed get currentDisplayAxisLabels(): { horizontal: string; vertical: string } {
+        const axisConfig = getAxisConfig(this.cubeViewMode);
+        const axisNames = ['X', 'Y', 'Z'];
+        return { 
+            horizontal: axisNames[axisConfig.x], 
+            vertical: axisNames[axisConfig.y] 
+        };
+    }
+
+    @computed get currentSlicePosition(): number {
+        // Return the current slice position based on orientation
+        const axis = this.currentSliceAxis;
+        switch (axis) {
+            case 0: // X axis - need X position from cursor or center
+                return Math.floor(this.center.x);
+            case 1: // Y axis - need Y position from cursor or center  
+                return Math.floor(this.center.y);
+            case 2: // Z axis (default) - use channel
+            default:
+                return this.requiredChannel;
+        }
+    }
+
+    @computed get currentSliceIndex(): number {
+        // Return the current slice index for UI controls (0-based)
+        return this.currentSlicePosition;
+    }
+
+    @computed get currentSliceAxisInfo(): string {
+        // Return axis info for the current slice axis based on cube view mode
+        const position = this.currentSlicePosition;
+        const axisLabel = this.currentSliceAxisLabel;
+        
+        // For now, return a simple coordinate display
+        // TODO: Implement full WCS transformation for X and Y axes like depthAxisInfo
+        return `${axisLabel}: ${position}`;
+    }
+
+    @computed get displayDimensions(): Point2D {
+        // Get the display dimensions based on current orientation
+        const axisConfig = getAxisConfig(this.cubeViewMode);
+        const dimensions = [
+            this.frameInfo.fileInfoExtended.width,  // X dimension
+            this.frameInfo.fileInfoExtended.height, // Y dimension
+            this.frameInfo.fileInfoExtended.depth   // Z dimension
+        ];
+        
+        return {
+            x: dimensions[axisConfig.x],
+            y: dimensions[axisConfig.y]
+        };
+    }
+
+    @computed get orientationAwareRequiredChannel(): number {
+        // For now, always return regular channel (Z-axis slicing)
+        // Backend support for slice orientation will be added separately
+        return this.requiredChannel;
     }
 
     @computed get fovSizeWCS(): WCSPoint2D {
@@ -1280,6 +1391,7 @@ export class FrameStore {
         this.channel = 0;
         this.requiredStokes = 0;
         this.requiredChannel = 0;
+        this.cubeViewMode = CARTA.CubeViewMode.VIEW_MODE_XY; // Default to normal XY view
         this.renderConfig = new RenderConfigStore(preferenceStore, this);
         this.overlayStore = frameInfo.preview ? new PvPreviewOverlayStore(pvGeneratorWidget) : new ImageViewOverlayStore();
         this.channelMapOuterOverlayStore = new ChannelMapOuterOverlayStore();
@@ -2071,6 +2183,73 @@ export class FrameStore {
 
     @action setTitleCustomText = (text: string) => {
         this.titleCustomText = text;
+    };
+
+    @action setCubeViewMode = (mode: CARTA.CubeViewMode) => {
+        if (this.cubeViewMode !== mode) {
+            const oldMode = this.cubeViewMode;
+            this.cubeViewMode = mode;
+            
+            console.log(`Cube view mode changed from ${oldMode} to ${mode}`);
+            
+            // Reset to first slice when changing orientation
+            const axisConfig = getAxisConfig(mode);
+            const sliceAxis = axisConfig.slice;
+            let maxSlice: number;
+            
+            switch (sliceAxis) {
+                case 0: // X axis
+                    maxSlice = this.frameInfo.fileInfoExtended.width - 1;
+                    break;
+                case 1: // Y axis
+                    maxSlice = this.frameInfo.fileInfoExtended.height - 1;
+                    break;
+                case 2: // Z axis (default)
+                default:
+                    maxSlice = this.frameInfo.fileInfoExtended.depth - 1;
+                    break;
+            }
+            
+            // Reset to middle slice for the new orientation
+            const middleSlice = Math.floor(maxSlice / 2);
+            this.setSlice(middleSlice, true);
+            
+            console.log(`Reset to slice ${middleSlice} of ${maxSlice} for ${getSliceAxisName(mode)} axis`);
+        }
+    };
+
+    @action setSlice = (sliceIndex: number, recursive: boolean = true) => {
+        // For now, just set the Z channel (normal slicing)
+        // Backend slice orientation support will be added separately
+        this.setChannels(sliceIndex, this.requiredStokes, recursive);
+    };
+
+    @action setCurrentSlice = (sliceIndex: number, recursive: boolean = true) => {
+        // Set slice based on current cube view mode
+        const axis = this.currentSliceAxis;
+        
+        switch (axis) {
+            case 0: // X axis - set X position (for YZ view)
+                // For now, just update center position - proper backend support needed
+                this.setCenter(sliceIndex, this.center.y);
+                break;
+            case 1: // Y axis - set Y position (for XZ view)  
+                // For now, just update center position - proper backend support needed
+                this.setCenter(this.center.x, sliceIndex);
+                break;
+            case 2: // Z axis (default) - normal channel slicing
+            default:
+                this.setChannels(sliceIndex, this.requiredStokes, recursive);
+                break;
+        }
+    };
+
+    /**
+     * Increments the current slice (Z channel)
+     */
+    @action incrementSlice = (delta: number, wrap: boolean = true) => {
+        // For now, just increment Z channel (normal slicing)
+        this.incrementChannels(delta, 0, wrap);
     };
 
     public getControlMap(frame: FrameStore) {

@@ -1,5 +1,6 @@
 import * as React from "react";
 import {AnchorButton, Button, ButtonGroup, Classes, ControlGroup, HTMLSelect, IconName, Menu, MenuItem, NonIdealState, NumberRange, Popover, Position, Radio, RangeSlider, Slider, Tooltip} from "@blueprintjs/core";
+import {CARTA} from "carta-protobuf";
 import classNames from "classnames";
 import {action, makeObservable, observable} from "mobx";
 import {observer} from "mobx-react";
@@ -8,6 +9,20 @@ import {ResizeDetector, SafeNumericInput, ScrollShadow} from "components/Shared"
 import {AnimationMode, AnimatorStore, AppStore, DefaultWidgetConfig, HelpType, PlayMode, WidgetProps} from "stores";
 
 import "./AnimatorComponent.scss";
+
+// Helper functions for cube view mode
+function getCubeViewDisplayName(mode: CARTA.CubeViewMode): string {
+    switch (mode) {
+        case CARTA.CubeViewMode.VIEW_MODE_XY:
+            return "XY (Default)";
+        case CARTA.CubeViewMode.VIEW_MODE_YZ:
+            return "YZ (Side View)";
+        case CARTA.CubeViewMode.VIEW_MODE_XZ:
+            return "XZ (Front View)";
+        default:
+            return "XY (Default)";
+    }
+}
 
 enum NumericInputType {
     FrameRate = "Frame rate",
@@ -52,20 +67,22 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
     onChannelChanged = (val: number) => {
         const frame = AppStore.Instance.activeFrame;
         if (frame) {
+            const maxSlices = frame.currentSliceAxisSize;
             if (val < 0) {
-                val += frame.frameInfo.fileInfoExtended.depth;
+                val += maxSlices;
             }
-            if (val >= frame.frameInfo.fileInfoExtended.depth) {
+            if (val >= maxSlices) {
                 val = 0;
             }
-            frame.setChannel(val);
+            frame.setCurrentSlice(val);
         }
     };
 
     onRangeChanged = (range: NumberRange) => {
         const frame = AppStore.Instance.activeFrame;
         if (range && range.length === 2 && frame) {
-            if (range[0] >= 0 && range[0] < range[1] && range[1] < frame.frameInfo.fileInfoExtended.depth) {
+            const maxSlices = frame.currentSliceAxisSize;
+            if (range[0] >= 0 && range[0] < range[1] && range[1] < maxSlices) {
                 frame.setAnimationRange(range);
             }
         }
@@ -74,6 +91,13 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
     onStokesChanged = (val: number) => {
         const frame = AppStore.Instance.activeFrame;
         frame?.setStokesByIndex(val, true);
+    };
+
+    onCubeViewModeChanged = (mode: CARTA.CubeViewMode) => {
+        const frame = AppStore.Instance.activeFrame;
+        if (frame) {
+            frame.setCubeViewMode(mode);
+        }
     };
 
     onImageChanged = (val: number) => {
@@ -106,7 +130,7 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
                 appStore.setActiveImageByIndex(0);
                 break;
             case AnimationMode.CHANNEL:
-                frame.setChannels(0, frame.stokes, true);
+                frame.setSlice(0);
                 break;
             case AnimationMode.STOKES:
                 frame.setChannels(frame.channel, 0, true);
@@ -129,7 +153,7 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
                 appStore.setActiveImageByIndex(appStore.imageViewConfigStore.imageNum - 1);
                 break;
             case AnimationMode.CHANNEL:
-                frame.setChannels(frame.frameInfo.fileInfoExtended.depth - 1, frame.stokes, true);
+                frame.setSlice(frame.frameInfo.fileInfoExtended.depth - 1);
                 break;
             case AnimationMode.STOKES:
                 frame.setChannels(frame.channel, frame.frameInfo.fileInfoExtended.stokes < frame.polarizations.length ? frame.polarizations[frame.polarizations.length - 1] : frame.frameInfo.fileInfoExtended.stokes - 1, true);
@@ -152,7 +176,7 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
                 appStore.nextImage();
                 break;
             case AnimationMode.CHANNEL:
-                frame.incrementChannels(1, 0);
+                frame.incrementSlice(1);
                 break;
             case AnimationMode.STOKES:
                 frame.incrementChannels(0, 1);
@@ -175,7 +199,7 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
                 appStore.prevImage();
                 break;
             case AnimationMode.CHANNEL:
-                frame.incrementChannels(-1, 0);
+                frame.incrementSlice(-1);
                 break;
             case AnimationMode.STOKES:
                 frame.incrementChannels(0, -1);
@@ -203,13 +227,13 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
         const appStore = AppStore.Instance;
         const numImages = appStore.imageViewConfigStore.imageNum;
         const activeFrame = appStore.activeFrame;
-        const numChannels = activeFrame ? activeFrame.frameInfo.fileInfoExtended.depth : 0;
+        const numChannels = activeFrame ? activeFrame.currentSliceAxisSize : 0;
         const numStokes = activeFrame ? activeFrame.frameInfo.fileInfoExtended.stokes : 0;
 
         const iconOnly = this.width < 625;
         const hideSliders = this.width < 450;
 
-        let channelSlider, channelRangeSlider, stokesSlider, imageSlider;
+        let channelSlider, channelRangeSlider, stokesSlider, imageSlider, sliceOrientationControl;
         // Image Control
         const imageIndex = appStore.activeImageIndex;
         if (numImages > 1 && imageIndex !== -1) {
@@ -245,14 +269,14 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
                         disabled={appStore.animatorStore.animationActive}
                         checked={appStore.animatorStore.animationMode === AnimationMode.CHANNEL}
                         onChange={this.onAnimationModeChanged}
-                        label={activeFrame.channelType}
+                        label={activeFrame.currentSliceAxisLabel}
                     />
-                    {hideSliders && <SafeNumericInput value={activeFrame.requiredChannel} min={-1} max={numChannels} stepSize={1} onValueChange={this.onChannelChanged} fill={true} disabled={appStore.animatorStore.animationActive} />}
+                    {hideSliders && <SafeNumericInput value={activeFrame.currentSliceIndex} min={-1} max={numChannels} stepSize={1} onValueChange={this.onChannelChanged} fill={true} disabled={appStore.animatorStore.animationActive} />}
                     {!hideSliders && (
                         <React.Fragment>
                             <Slider
                                 className="channel-slider"
-                                value={activeFrame.requiredChannel}
+                                value={activeFrame.currentSliceIndex}
                                 min={0}
                                 max={numChannels - 1}
                                 labelValues={channelTick}
@@ -262,7 +286,7 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
                                 disabled={appStore.animatorStore.animationActive}
                             />
                             <div className="slider-info" data-testid="animator-slider-info">
-                                <pre>{activeFrame.depthAxisInfo}</pre>
+                                <pre>{activeFrame.currentSliceAxisInfo}</pre>
                             </div>
                         </React.Fragment>
                     )}
@@ -321,6 +345,40 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
                             <div className="slider-info" />
                         </React.Fragment>
                     )}
+                </div>
+            );
+        }
+
+        // Cube View Mode Control (3D Cube viewing)
+        if (activeFrame && numChannels > 1) {
+            const cubeViewOptions = [
+                { label: getCubeViewDisplayName(CARTA.CubeViewMode.VIEW_MODE_XY), value: CARTA.CubeViewMode.VIEW_MODE_XY },
+                { label: getCubeViewDisplayName(CARTA.CubeViewMode.VIEW_MODE_YZ), value: CARTA.CubeViewMode.VIEW_MODE_YZ },
+                { label: getCubeViewDisplayName(CARTA.CubeViewMode.VIEW_MODE_XZ), value: CARTA.CubeViewMode.VIEW_MODE_XZ }
+            ];
+
+            sliceOrientationControl = (
+                <div className="animator-slider" data-testid="cube-view-mode-control">
+                    <div style={{ display: "flex", alignItems: "center", width: "100%" }}>
+                        <label style={{ minWidth: "135px", marginRight: "10px", fontSize: "14px" }}>
+                            Cube View Mode
+                        </label>
+                        <HTMLSelect
+                            value={activeFrame.cubeViewMode}
+                            onChange={(event) => this.onCubeViewModeChanged(parseInt(event.currentTarget.value) as CARTA.CubeViewMode)}
+                            disabled={appStore.animatorStore.animationActive}
+                            style={{ flex: "1", maxWidth: "150px" }}
+                        >
+                            {cubeViewOptions.map(option => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
+                                </option>
+                            ))}
+                        </HTMLSelect>
+                        <div style={{ flex: "1", marginLeft: "15px", fontSize: "small", color: "#5C7080" }}>
+                            {activeFrame.currentSliceAxisLabel} slices
+                        </div>
+                    </div>
                 </div>
             );
         }
@@ -430,6 +488,7 @@ export class AnimatorComponent extends React.Component<WidgetProps> {
                                     {imageSlider}
                                     {channelSlider}
                                     {channelRangeSlider}
+                                    {sliceOrientationControl}
                                     {stokesSlider}
                                 </div>
                             )}

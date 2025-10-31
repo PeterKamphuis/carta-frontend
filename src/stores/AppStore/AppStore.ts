@@ -1742,15 +1742,15 @@ export class AppStore {
             frame.stokes = update.stokes;
 
             if (this.channelMapStore.channelMapEnabled) {
-                this.tileService.updateChannelMapActiveChannel(frame.frameInfo.fileId, frame.channel, frame.stokes);
+                this.tileService.updateChannelMapActiveChannel(frame.frameInfo.fileId, frame.orientationAwareRequiredChannel, frame.stokes);
             } else if (this.imageViewConfigStore.visibleFrames.includes(frame)) {
                 const [tiles, midPointTileCoords] = frame.requiredTiles;
                 // If BUNIT = km/s, adopted compressionQuality is set to 32 regardless the preferences setup
                 const bunitVariant = ["km/s", "km s-1", "km s^-1", "km.s-1"];
                 const compressionQuality = bunitVariant.includes(frame.headerUnit) ? Math.max(this.preferenceStore.imageCompressionQuality, 32) : this.preferenceStore.imageCompressionQuality;
-                this.tileService.requestTiles(tiles, frame.frameInfo.fileId, frame.channel, frame.stokes, midPointTileCoords, compressionQuality, true);
+                this.tileService.requestTiles(tiles, frame.frameInfo.fileId, frame.orientationAwareRequiredChannel, frame.stokes, midPointTileCoords, compressionQuality, true);
             } else {
-                this.tileService.updateHiddenFileChannels(frame.frameInfo.fileId, frame.channel, frame.stokes);
+                this.tileService.updateHiddenFileChannels(frame.frameInfo.fileId, frame.orientationAwareRequiredChannel, frame.stokes);
             }
         }
     };
@@ -1764,14 +1764,14 @@ export class AppStore {
             const updateRequiredChannels = frame.requiredChannel !== frame.channel || frame.requiredStokes !== frame.stokes;
             // Don't auto-update when animation is playing
             if (!this.animatorStore.animationActive && updateRequiredChannels) {
-                updates.push({frame: frame, channel: frame.requiredChannel, stokes: frame.requiredStokes});
+                updates.push({frame: frame, channel: frame.orientationAwareRequiredChannel, stokes: frame.requiredStokes});
             }
 
             // Update any sibling channels
             frame.spectralSiblings.forEach(frame => {
                 const siblingUpdateRequired = frame.requiredChannel !== frame.channel || frame.requiredStokes !== frame.stokes;
                 if (siblingUpdateRequired) {
-                    updates.push({frame, channel: frame.requiredChannel, stokes: frame.requiredStokes});
+                    updates.push({frame, channel: frame.orientationAwareRequiredChannel, stokes: frame.requiredStokes});
                 }
             });
 
@@ -2024,7 +2024,7 @@ export class AppStore {
                     const updateRequiredChannels = visibleFrame.requiredChannel !== visibleFrame?.channel || visibleFrame.requiredStokes !== visibleFrame.stokes;
                     // Don't auto-update when animation is playing
                     if (!this.animatorStore.animationActive && updateRequiredChannels) {
-                        updates.push({frame: visibleFrame, channel: visibleFrame.requiredChannel, stokes: visibleFrame.requiredStokes});
+                        updates.push({frame: visibleFrame, channel: visibleFrame.orientationAwareRequiredChannel, stokes: visibleFrame.requiredStokes});
                     }
 
                     // Update any sibling channels
@@ -2032,7 +2032,7 @@ export class AppStore {
                         const isVisible = this.imageViewConfigStore.visibleFrames.includes(frame);
                         const siblingUpdateRequired = frame.requiredChannel !== frame.channel || frame.requiredStokes !== frame.stokes;
                         if (!isVisible && siblingUpdateRequired) {
-                            updates.push({frame, channel: frame.requiredChannel, stokes: frame.requiredStokes});
+                            updates.push({frame, channel: frame.orientationAwareRequiredChannel, stokes: frame.requiredStokes});
                         }
                     });
                 }
