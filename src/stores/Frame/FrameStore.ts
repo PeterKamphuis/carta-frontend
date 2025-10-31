@@ -2300,11 +2300,9 @@ export class FrameStore {
         
         switch (axis) {
             case 0: // X axis - set X position (for YZ view)
-                // For now, just update center position - proper backend support needed
                 this.setCenter(sliceIndex, this.center.y);
                 break;
             case 1: // Y axis - set Y position (for XZ view)  
-                // For now, just update center position - proper backend support needed
                 this.setCenter(this.center.x, sliceIndex);
                 break;
             case 2: // Z axis (default) - normal channel slicing
@@ -2315,11 +2313,32 @@ export class FrameStore {
     };
 
     /**
-     * Increments the current slice (Z channel)
+     * Increments the current slice based on cube view mode
      */
     @action incrementSlice = (delta: number, wrap: boolean = true) => {
-        // For now, just increment Z channel (normal slicing)
-        this.incrementChannels(delta, 0, wrap);
+        const axis = this.currentSliceAxis;
+        const currentPosition = this.currentSlicePosition;
+        
+        switch (axis) {
+            case 0: // X axis - increment X position (for YZ view)
+                const maxX = this.frameInfo.fileInfoExtended.width;
+                const newX = wrap ? 
+                    (currentPosition + delta + maxX) % maxX :
+                    Math.max(0, Math.min(maxX - 1, currentPosition + delta));
+                this.setCenter(newX, this.center.y);
+                break;
+            case 1: // Y axis - increment Y position (for XZ view)
+                const maxY = this.frameInfo.fileInfoExtended.height;
+                const newY = wrap ?
+                    (currentPosition + delta + maxY) % maxY :
+                    Math.max(0, Math.min(maxY - 1, currentPosition + delta));
+                this.setCenter(this.center.x, newY);
+                break;
+            case 2: // Z axis (default) - normal channel slicing
+            default:
+                this.incrementChannels(delta, 0, wrap);
+                break;
+        }
     };
 
     public getControlMap(frame: FrameStore) {
