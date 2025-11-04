@@ -1996,6 +1996,7 @@ export class AppStore {
                     const tileSizeFullRes = reqView.mip * 256;
                     const midPointTileCoords = {x: midPointImageCoords.x / tileSizeFullRes - 0.5, y: midPointImageCoords.y / tileSizeFullRes - 0.5};
                     if (tiles.length) {
+                        console.log(`[DEBUG] AppStore tile request: cubeViewMode=${frame.cubeViewMode}, channel=${frame.channel}, currentSlicePosition=${frame.currentSlicePosition}, using channel=${frame.channel}`);
                         viewUpdates.push({tiles, fileId: frame.frameInfo.fileId, channel: frame.channel, stokes: frame.stokes, focusPoint: midPointTileCoords, headerUnit: frame.headerUnit});
                     }
                 }

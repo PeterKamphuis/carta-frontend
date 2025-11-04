@@ -456,16 +456,8 @@ export class FrameStore {
 
     @computed get currentSlicePosition(): number {
         // Return the current slice position based on orientation
-        const axis = this.currentSliceAxis;
-        switch (axis) {
-            case 0: // X axis - need X position from cursor or center
-                return Math.floor(this.center.x);
-            case 1: // Y axis - need Y position from cursor or center  
-                return Math.floor(this.center.y);
-            case 2: // Z axis (default) - use channel
-            default:
-                return this.requiredChannel;
-        }
+        // For all cube view modes, the slice position is stored in requiredChannel
+        return this.requiredChannel;
     }
 
     @computed get currentSliceIndex(): number {
@@ -979,10 +971,23 @@ export class FrameStore {
     }
 
     get dirXLabel(): string {
+        // For YZ mode, X-axis should show DEC axis (dirYNumber)
+        // For XZ mode, X-axis should show RA axis (dirXNumber) 
+        // For XY mode, X-axis should show RA axis (dirXNumber)
+        if (this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_YZ) {
+            return this.getDirAxisLabel(this.dirYNumber);
+        }
         return this.getDirAxisLabel(this.dirXNumber);
     }
 
     get dirYLabel(): string {
+        // For YZ mode, Y-axis should show spectral axis
+        // For XZ mode, Y-axis should show spectral axis
+        // For XY mode, Y-axis should show DEC axis (dirYNumber)
+        if (this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_YZ || this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_XZ) {
+            // Return spectral axis label
+            return this.spectralLabel || "Velocity";
+        }
         return this.getDirAxisLabel(this.dirYNumber);
     }
 
@@ -2259,6 +2264,13 @@ export class FrameStore {
             
             console.log(`Cube view mode changed from ${oldMode} to ${mode}`);
             
+            // Send cube view mode change to backend
+            const cubeViewModeMessage: CARTA.ISetCubeViewMode = {
+                fileId: this.frameInfo.fileId,
+                viewMode: mode
+            };
+            this.backendService.setCubeViewMode(cubeViewModeMessage);
+            
             // Reset to first slice when changing orientation
             const axisConfig = getAxisConfig(mode);
             const sliceAxis = axisConfig.slice;
@@ -2294,21 +2306,37 @@ export class FrameStore {
         this.setChannels(sliceIndex, this.requiredStokes, recursive);
     };
 
-    @action setCurrentSlice = (sliceIndex: number, recursive: boolean = true) => {
-        // Set slice based on current cube view mode
+    private getMaxSliceForCurrentAxis(): number {
         const axis = this.currentSliceAxis;
-        
         switch (axis) {
-            case 0: // X axis - set X position (for YZ view)
-                this.setCenter(sliceIndex, this.center.y);
-                break;
-            case 1: // Y axis - set Y position (for XZ view)  
-                this.setCenter(this.center.x, sliceIndex);
-                break;
-            case 2: // Z axis (default) - normal channel slicing
+            case 0: // X axis (for YZ view)
+                return this.frameInfo.fileInfoExtended.width - 1;
+            case 1: // Y axis (for XZ view)
+                return this.frameInfo.fileInfoExtended.height - 1;
+            case 2: // Z axis (default)
             default:
-                this.setChannels(sliceIndex, this.requiredStokes, recursive);
-                break;
+                return this.frameInfo.fileInfoExtended.depth - 1;
+        }
+    }
+
+    @action setCurrentSlice = (sliceIndex: number, recursive: boolean = true) => {
+        console.log(`[DEBUG] setCurrentSlice: sliceIndex=${sliceIndex}, currentSliceAxis=${this.currentSliceAxis}, cubeViewMode=${this.cubeViewMode}`);
+        
+        // In all cube view modes, the slice position should update the requiredChannel
+        // This represents which "slice" we're looking at through the cube
+        const maxSlice = this.getMaxSliceForCurrentAxis();
+        const sanitizedSlice = Math.max(0, Math.min(sliceIndex, maxSlice));
+        
+        if (this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_XY) {
+            // XY mode: normal spectral channel slicing
+            console.log(`[DEBUG] XY mode: Setting channel to ${sanitizedSlice} (was ${this.channel})`);
+            this.setChannels(sanitizedSlice, this.requiredStokes, recursive);
+        } else {
+            // YZ/XZ modes: set the slice position as the "channel" for tile requests
+            // The backend will interpret this as X position (YZ) or Y position (XZ)
+            console.log(`[DEBUG] Cube mode: Setting slice position to ${sanitizedSlice} (was ${this.requiredChannel})`);
+            this.requiredChannel = sanitizedSlice;
+            // Do NOT change center - center is controlled by mouse dragging, not slider
         }
     };
 
@@ -2316,29 +2344,18 @@ export class FrameStore {
      * Increments the current slice based on cube view mode
      */
     @action incrementSlice = (delta: number, wrap: boolean = true) => {
-        const axis = this.currentSliceAxis;
         const currentPosition = this.currentSlicePosition;
+        const maxSlice = this.getMaxSliceForCurrentAxis();
         
-        switch (axis) {
-            case 0: // X axis - increment X position (for YZ view)
-                const maxX = this.frameInfo.fileInfoExtended.width;
-                const newX = wrap ? 
-                    (currentPosition + delta + maxX) % maxX :
-                    Math.max(0, Math.min(maxX - 1, currentPosition + delta));
-                this.setCenter(newX, this.center.y);
-                break;
-            case 1: // Y axis - increment Y position (for XZ view)
-                const maxY = this.frameInfo.fileInfoExtended.height;
-                const newY = wrap ?
-                    (currentPosition + delta + maxY) % maxY :
-                    Math.max(0, Math.min(maxY - 1, currentPosition + delta));
-                this.setCenter(this.center.x, newY);
-                break;
-            case 2: // Z axis (default) - normal channel slicing
-            default:
-                this.incrementChannels(delta, 0, wrap);
-                break;
+        let newSlice: number;
+        if (wrap) {
+            newSlice = (currentPosition + delta + maxSlice + 1) % (maxSlice + 1);
+        } else {
+            newSlice = Math.max(0, Math.min(maxSlice, currentPosition + delta));
         }
+        
+        console.log(`[DEBUG] incrementSlice: delta=${delta}, currentPosition=${currentPosition}, newSlice=${newSlice}, maxSlice=${maxSlice}`);
+        this.setCurrentSlice(newSlice);
     };
 
     public getControlMap(frame: FrameStore) {

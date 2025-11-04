@@ -709,6 +709,17 @@ export class BackendService {
         return false;
     }
 
+    @action("set cube view mode")
+    setCubeViewMode(message: CARTA.ISetCubeViewMode) {
+        if (this.connectionStatus === ConnectionStatus.ACTIVE) {
+            this.logEvent(CARTA.EventType.SET_CUBE_VIEW_MODE, this.eventCounter, message, false);
+            if (this.sendEvent(CARTA.EventType.SET_CUBE_VIEW_MODE, CARTA.SetCubeViewMode.encode(message).finish())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     async resumeSession(message: CARTA.IResumeSession): Promise<CARTA.IResumeSessionAck> {
         if (this.connectionStatus !== ConnectionStatus.ACTIVE) {
             throw new Error("Not connected");
