@@ -101,17 +101,24 @@ export class OverlayGlobalSettings {
         astString.add("Tol", toFixed(this.tolerance / 100, 2), this.tolerance >= 0.001); // convert to fraction
 
         const isWcsFrameAndSystem = typeof this.explicitSystem !== "undefined" && this.explicitSystem !== SystemType.Image && frame.validWcs;
-        if (isWcsFrameAndSystem) {
+        const isInCubeMode = frame && frame.cubeViewMode !== 0; // 0 = XY mode, 1+ = cube modes
+        
+        if (isWcsFrameAndSystem && !isInCubeMode) {
+            // Only add System for non-cube modes to avoid compound frame errors
             astString.add("System", this.explicitSystem);
         }
 
         if (!AppStore.Instance.overlaySettings.labels?.customText) {
-            const symbolX = AST.getString(frame?.wcsInfo, "Symbol(1)");
-            const symbolY = AST.getString(frame?.wcsInfo, "Symbol(2)");
-            const labelX = AST.getString(frame?.wcsInfo, "Label(1)");
-            const labelY = AST.getString(frame?.wcsInfo, "Label(2)");
-            const haveUnitX = AST.getString(frame?.wcsInfo, "Unit(1)") !== "";
-            const haveUnitY = AST.getString(frame?.wcsInfo, "Unit(2)") !== "";
+            // For cube modes, use the cube view frame (now a proper 2D frame created by initCubeViewFrame)
+            const wcsForLabels = frame?.wcsInfo;
+            
+            // Now that we have proper cube view frames, let AST provide labels automatically
+            const symbolX = AST.getString(wcsForLabels, "Symbol(1)");
+            const symbolY = AST.getString(wcsForLabels, "Symbol(2)");
+            const labelX = AST.getString(wcsForLabels, "Label(1)");
+            const labelY = AST.getString(wcsForLabels, "Label(2)");
+            const haveUnitX = AST.getString(wcsForLabels, "Unit(1)") !== "";
+            const haveUnitY = AST.getString(wcsForLabels, "Unit(2)") !== "";
 
             const isSysPixel = (this.explicitSystem === undefined && !(frame?.isPVImage || frame?.isSwappedZ)) || this.explicitSystem === SystemType.Image;
             const getSystemName = (symbolXY: string, isSysPixel: boolean, haveUnit: boolean, explicitSystem: SystemType) => {
@@ -129,7 +136,7 @@ export class OverlayGlobalSettings {
             astString.add("Label(2)", `"${labelY.replace(/%/g, "%%%%").replace(/"/g, "”")}${systemNameY}"`, labelY !== undefined);
         }
 
-        if ((frame?.isXY || frame?.isYX) && !frame?.isPVImage && isWcsFrameAndSystem) {
+        if ((frame?.isXY || frame?.isYX) && !frame?.isPVImage && isWcsFrameAndSystem && !isInCubeMode) {
             if (this.system === SystemType.FK4) {
                 astString.add("Equinox", "1950");
             } else {
@@ -1054,7 +1061,11 @@ export class OverlaySettings {
             this.setFormatsFromSystem();
             AppStore.Instance.frames.forEach(frame => {
                 if (frame?.validWcs && frame?.wcsInfoForTransformation && this.global.explicitSystem && this.global.explicitSystem !== SystemType.Image) {
-                    AST.set(frame.wcsInfoForTransformation, `System=${this.global.explicitSystem}`);
+                    // Skip setting System on frames in cube view mode to avoid AST compound frame errors
+                    const isInCubeMode = frame.cubeViewMode !== 0; // 0 = XY mode, 1+ = cube modes
+                    if (!isInCubeMode) {
+                        AST.set(frame.wcsInfoForTransformation, `System=${this.global.explicitSystem}`);
+                    }
                 }
             });
         });

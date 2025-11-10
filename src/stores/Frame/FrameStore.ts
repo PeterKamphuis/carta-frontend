@@ -168,7 +168,8 @@ export class FrameStore {
     public requiredFrameViewForRegionRender: FrameView;
 
     public wcsInfo: AST.FrameSet;
-    public readonly wcsInfoForTransformation: AST.FrameSet;
+    private wcsInfoOriginal2D: AST.FrameSet; // Store original 2D WCS for cube view mode switching
+    public wcsInfoForTransformation: AST.FrameSet;
     @observable public wcsInfoShifted: AST.FrameSet;
     public readonly wcsInfo3D: AST.FrameSet;
     public readonly validWcs: boolean;
@@ -307,7 +308,7 @@ export class FrameStore {
     }
 
     @computed get isNormalImage(): boolean {
-        return !this.isPVImage && !this.isUVImage && !this.isSwappedZ;
+        return !this.isPVImage && !this.isUVImage && !this.isSwappedZ && this.cubeViewMode === 0;
     }
 
     get hasSquarePixels(): boolean {
@@ -929,8 +930,26 @@ export class FrameStore {
         return this.stokesNumber > 0 && this.stokesNumber < this.dirYNumber ? this.dirYNumber - 1 : this.dirYNumber;
     }
 
+    // Axis numbers for overlay system
+    @computed get overlayDirX(): number {
+        // In cube view modes, the 2D frame has axis 1 as the spatial axis
+        if (this.cubeViewMode !== CARTA.CubeViewMode.VIEW_MODE_XY) {
+            return 1; // Always axis 1 in the 2D cube view frame
+        }
+        return this.dirX;
+    }
+
+    @computed get overlayDirY(): number {
+        // In cube view modes, the 2D frame has axis 2 as the spectral axis
+        if (this.cubeViewMode !== CARTA.CubeViewMode.VIEW_MODE_XY) {
+            return 2; // Always axis 2 in the 2D cube view frame
+        }
+        return this.dirY;
+    }
+
     // Spectral axis number in the AST frame set
     get spectral(): number {
+        // Always return the original spectral axis number for frame operations
         return this.stokesNumber > 0 && this.stokesNumber < this.spectralNumber ? this.spectralNumber - 1 : this.spectralNumber;
     }
 
@@ -974,21 +993,27 @@ export class FrameStore {
         // For YZ mode, X-axis should show DEC axis (dirYNumber)
         // For XZ mode, X-axis should show RA axis (dirXNumber) 
         // For XY mode, X-axis should show RA axis (dirXNumber)
+        let label: string;
         if (this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_YZ) {
-            return this.getDirAxisLabel(this.dirYNumber);
+            label = this.getDirAxisLabel(this.dirYNumber);
+        } else {
+            label = this.getDirAxisLabel(this.dirXNumber);
         }
-        return this.getDirAxisLabel(this.dirXNumber);
+        return label;
     }
 
     get dirYLabel(): string {
         // For YZ mode, Y-axis should show spectral axis
         // For XZ mode, Y-axis should show spectral axis
         // For XY mode, Y-axis should show DEC axis (dirYNumber)
+        let label: string;
         if (this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_YZ || this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_XZ) {
             // Return spectral axis label
-            return this.spectralLabel || "Velocity";
+            label = this.spectralLabel || "Velocity";
+        } else {
+            label = this.getDirAxisLabel(this.dirYNumber);
         }
-        return this.getDirAxisLabel(this.dirYNumber);
+        return label;
     }
 
     @computed
@@ -1619,6 +1644,9 @@ export class FrameStore {
                 AST.deleteObject(astFrameSet);
 
                 if (this.wcsInfo) {
+                    // Store original 2D WCS for cube view mode switching
+                    this.wcsInfoOriginal2D = AST.copy(this.wcsInfo);
+                    
                     // init 2D(Sky) wcs copy for the precision of region coordinate transformation
                     this.wcsInfoForTransformation = AST.copy(this.wcsInfo);
                     AST.set(this.wcsInfoForTransformation, `Format(${this.dirX})=${overlaySettings.numbers.formatTypeX}.${WCS_PRECISION}`);
@@ -1819,11 +1847,22 @@ export class FrameStore {
         const entries = this.frameInfo.fileInfoExtended.headerEntries;
         const dirXAxis = entries.find(entry => entry.name.includes(`CTYPE${axisNumber}`));
         let name = dirXAxis?.value ?? "";
+        
+        // For cube view modes, return LINEAR-* coordinate types like in the frame
+        if (this.cubeViewMode !== CARTA.CubeViewMode.VIEW_MODE_XY) {
+            if (name.match(/^RA/) || name.includes('RA')) {
+                return "LINEAR-RA";
+            } else if (name.match(/^DEC/) || name.includes('DEC')) {
+                return "LINEAR-DEC";
+            }
+        }
+        
         if (name.match(/^RA/) && this.isSwappedZ) {
             name = "Right ascension"; // Customize the axis label
         } else {
             name = ""; // Use the default axis label in AST
         }
+        
         return name;
     };
 
@@ -1892,6 +1931,108 @@ export class FrameStore {
             return undefined;
         }
         return AST.transformSpectralPoint(this.spectralFrame, type, unit, system, value);
+    };
+
+    private initCubeViewFrame = (): AST.FrameSet => {
+        if (this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_XY) {
+            return undefined;
+        }
+
+        const regOtherAxes = new RegExp(`(CTYPE|CDELT|CRPIX|CRVAL|CUNIT|NAXIS|CROTA)[4-9]`);
+        const regDirXNumber = new RegExp(`(CTYPE|CDELT|CRPIX|CRVAL|CUNIT|NAXIS|CROTA)${this.dirXNumber}`);
+        const regDirYNumber = new RegExp(`(CTYPE|CDELT|CRPIX|CRVAL|CUNIT|NAXIS|CROTA)${this.dirYNumber}`);
+        const regSpectralNumber = new RegExp(`(CTYPE|CDELT|CRPIX|CRVAL|CUNIT|NAXIS|CROTA)${this.spectralNumber}`);
+        const regStokesNumber = new RegExp(`(CTYPE|CDELT|CRPIX|CRVAL|CUNIT|NAXIS|CROTA)${this.stokesNumber}`);
+
+        const fitsChan = AST.emptyFitsChan();
+
+        // Determine which axes to include based on cube view mode
+        let spatialAxisNumber: number;
+        let newAxisNumbers: {spatial: number; spectral: number};
+        
+        if (this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_YZ) {
+            // YZ mode: X=DEC, Y=spectral  
+            spatialAxisNumber = this.dirYNumber;
+            newAxisNumbers = {spatial: 1, spectral: 2};
+        } else if (this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_XZ) {
+            // XZ mode: X=RA, Y=spectral
+            spatialAxisNumber = this.dirXNumber;
+            newAxisNumbers = {spatial: 1, spectral: 2};
+        } else {
+            return undefined;
+        }
+
+        for (let entry of this.frameInfo.fileInfoExtended.headerEntries) {
+            let name = entry.name;
+            if (name.match(regOtherAxes) || name.match(regStokesNumber) || name === "HISTORY" || name === "COMMENT") {
+                continue;
+            }
+
+            // Rename axis numbers for the 2D frame
+            if (name.match(regSpectralNumber)) {
+                name = entry.name.replace(`${this.spectralNumber}`, `${newAxisNumbers.spectral}`);
+            } else if (name.match(new RegExp(`(CTYPE|CDELT|CRPIX|CRVAL|CUNIT|NAXIS|CROTA)${spatialAxisNumber}`))) {
+                name = entry.name.replace(`${spatialAxisNumber}`, `${newAxisNumbers.spatial}`);
+            } else if ((this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_YZ && name.match(regDirXNumber)) ||
+                       (this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_XZ && name.match(regDirYNumber))) {
+                // Skip the unused spatial axis (RA in YZ mode, DEC in XZ mode)
+                continue;
+            }
+
+            let value = trimFitsComment(entry.value);
+         
+            // Replace celestial CTYPE values with LINEAR-* to avoid SkyFrame creation while preserving coordinate info
+            if (name.includes('CTYPE') && (value.includes('--') || value.includes('---') || value.includes('RA') || value.includes('DEC'))) {
+                // Preserve coordinate type info but make it LINEAR to prevent SkyFrame
+                if (value.includes('RA') || (value.includes('--') && value.startsWith('RA'))) {
+                    value = 'LINEAR-RA';
+                } else if (value.includes('DEC') || (value.includes('--') && value.startsWith('DEC'))) {
+                    value = 'LINEAR-DEC';
+                } else {
+                    value = 'LINEAR';
+                }
+            }
+
+            if (entry.name.toUpperCase() === "NAXIS" || entry.name.toUpperCase() === "WCSAXES") {
+                value = "2";
+            } else if (entry.name.toUpperCase() === `NAXIS${spatialAxisNumber}`) {
+                // Set the size of the spatial axis in the 2D frame
+                if (this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_YZ) {
+                    value = this.frameInfo.fileInfoExtended.width.toString();
+                } else {
+                    value = this.frameInfo.fileInfoExtended.height.toString();
+                }
+            } else if (entry.name.toUpperCase() === `NAXIS${this.spectralNumber}`) {
+                // Set the size of the spectral axis  
+                value = this.frameInfo.fileInfoExtended.depth.toString();
+            }
+
+            if (entry.entryType === CARTA.EntryType.STRING) {
+                value = `'${value}'`;
+            } else {
+                value = FrameStore.ShiftASTCoords(entry, value);
+            }
+            // Apply coordinate shifting like PV images do
+
+            while (name.length < 8) {
+                name += " ";
+            }
+
+            const entryString = `${name}=  ${value}`;
+            AST.putFits(fitsChan, entryString);
+        }
+        const frameSet = AST.getFrameFromFitsChan(fitsChan, false);
+        
+        // Set labels after frame creation (like PV images) 
+        // Note: Don't set Format() here as LINEAR-* coordinate types don't work with DMS/HMS formatting
+        // Let the overlay system handle coordinate formatting through OverlayComponent
+        if (frameSet) {
+            // Set proper coordinate labels based on original coordinate type
+            const spatialLabel = spatialAxisNumber === this.dirXNumber ? "Right ascension" : "Declination";
+            AST.set(frameSet, `Label(${newAxisNumbers.spatial})=${spatialLabel}`);
+        }
+        
+        return frameSet;
     };
 
     private initPVFrame = (): AST.FrameSet => {
@@ -2100,6 +2241,32 @@ export class FrameStore {
         }
     };
 
+    public updateCubeViewWcs = () => {
+        if (this.wcsInfo3D && this.cubeViewMode !== 0) {
+            // Create 2D frame using header-based approach like PV images
+            const astFrameSet = this.initCubeViewFrame();
+            if (astFrameSet) {
+                this.wcsInfo = AST.copy(astFrameSet);
+                AST.deleteObject(astFrameSet);
+            }
+            
+            // Update transformation WCS to match the new cube view WCS
+            if (this.wcsInfo && this.wcsInfoForTransformation) {
+                AST.deleteObject(this.wcsInfoForTransformation);
+                this.wcsInfoForTransformation = AST.copy(this.wcsInfo);
+            }
+        } else if (this.cubeViewMode === 0) {
+            // XY mode: restore original 2D WCS
+            this.wcsInfo = this.wcsInfoOriginal2D;
+            
+            // Also restore transformation WCS
+            if (this.wcsInfoForTransformation) {
+                AST.deleteObject(this.wcsInfoForTransformation);
+                this.wcsInfoForTransformation = AST.copy(this.wcsInfo);
+            }
+        }
+    };
+
     private updateDirAxisInfo = () => {
         // For direction vs. spectral image, get rendered direction axis index and size
         this.dirAxis = this.dirX < this.dirY ? this.dirX : this.dirY;
@@ -2188,10 +2355,15 @@ export class FrameStore {
     };
 
     public getCursorInfo(cursorPosImageSpace: Point2D) {
+        // Essential debug info only for cube view modes
+        if (this.cubeViewMode !== CARTA.CubeViewMode.VIEW_MODE_XY) {
+            console.log(`[DEBUG] getCursorInfo: cubeViewMode=${this.cubeViewMode}, dirX=${this.dirX}, dirY=${this.dirY}, spectral=${this.spectral}`);
+        }
         let cursorPosWCS, cursorPosFormatted;
         let precisionX = 0;
         let precisionY = 0;
-        if (((this.validWcs || this.isYX) && AppStore.Instance.overlaySettings.isWcsCoordinates) || !this.isNormalImage) {
+        const shouldUseWcs = ((this.validWcs || this.isYX) && AppStore.Instance.overlaySettings.isWcsCoordinates) || !this.isNormalImage;
+        if (shouldUseWcs) {
             // We need to compare X and Y coordinates in both directions
             // to avoid a confusing drop in precision at rounding threshold
             const offsetBlock = [
@@ -2204,6 +2376,7 @@ export class FrameStore {
             const cursorNeighbourhood = offsetBlock.map(offset => transformPoint(this.wcsInfo, {x: cursorPosImageSpace.x + offset[0], y: cursorPosImageSpace.y + offset[1]}));
 
             cursorPosWCS = cursorNeighbourhood[0];
+            console.log(`[DEBUG] getCursorInfo: cursorPosWCS:`, cursorPosWCS);
 
             const normalizedNeighbourhood = cursorNeighbourhood.map(pos => AST.normalizeCoordinates(this.wcsInfo, pos.x, pos.y));
 
@@ -2295,6 +2468,12 @@ export class FrameStore {
             
             // Update animation range for the new axis
             this.animationChannelRange = [0, maxSlice];
+            
+            // Update WCS to create proper 2D frame for cube view modes (like PV images)
+            this.updateCubeViewWcs();
+            
+            // Update cursor info with new WCS
+            this.cursorInfo = this.getCursorInfo(this.center);
             
             console.log(`Reset to slice ${middleSlice} of ${maxSlice} for ${getSliceAxisName(mode)} axis`);
         }

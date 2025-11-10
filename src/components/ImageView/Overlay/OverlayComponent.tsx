@@ -1,5 +1,6 @@
 import * as React from "react";
 import * as AST from "ast_wrapper";
+import {CARTA} from "carta-protobuf";
 import classNames from "classnames";
 import * as _ from "lodash";
 import {observer} from "mobx-react";
@@ -68,14 +69,11 @@ export class OverlayComponent extends React.Component<OverlayComponentProps> {
               ? frame.spatialReference.requiredFrameView
               : frame.requiredFrameView;
         if (wcsInfo && frameView && this.canvas) {
-            // Take aspect ratio scaling into account
-            const tempWcsInfo = AST.copy(wcsInfo);
-            if (!tempWcsInfo) {
-                console.log("Create wcs info copy failed.");
-                return;
-            }
-
-            this.updateImageDimensions();
+        const tempWcsInfo = AST.copy(wcsInfo);
+        if (!tempWcsInfo) {
+            console.log("Create wcs info copy failed.");
+            return;
+        }            this.updateImageDimensions();
             AST.setCanvas(this.canvas);
             if (!frame.hasSquarePixels) {
                 const scaleMapping = AST.scaleMap2D(1.0, 1.0 / frame.aspectRatio);
@@ -224,26 +222,52 @@ export class OverlayComponent extends React.Component<OverlayComponentProps> {
             const requiredChannel = frame.requiredChannel;
         }
         /* eslint-enable no-unused-vars, @typescript-eslint/no-unused-vars */
+        // Select WCS based on cube view mode - handled at FrameStore level now
+        const wcsInfo = frame.wcsInfo;
+        
         // Trigger switching AST overlay axis for PV image
+        // For cube view modes, spectral axis is axis 2 in the 2D swapped frame
+        const isCubeViewMode = frame.cubeViewMode !== CARTA.CubeViewMode.VIEW_MODE_XY;
+        const spectralAxisNumber = isCubeViewMode ? 2 : frame.spectral;
+        
         const spectralAxisSetting =
-            `${frame.spectralType ? `System(${frame.spectral})=${frame.spectralType},` : ""}` +
-            `${frame.spectralUnit ? `Unit(${frame.spectral})=${frame.spectralUnit},` : ""}` +
+            `${frame.spectralType ? `System(${spectralAxisNumber})=${frame.spectralType},` : ""}` +
+            `${frame.spectralUnit ? `Unit(${spectralAxisNumber})=${frame.spectralUnit},` : ""}` +
             `${frame.spectralSystem ? `StdOfRest=${frame.spectralSystem},` : ""}` +
             `${frame.restFreqStore.restFreqInHz ? `RestFreq=${frame.restFreqStore.restFreqInHz} Hz,` : ""}` +
-            `${frame.spectralType && frame.spectralSystem ? `Label(${frame.spectral})=[${frame.spectralSystem}] ${SPECTRAL_TYPE_STRING.get(frame.spectralType)},` : ""}`;
-        const dirAxesSetting = `${frame.dirX > 2 || frame.dirXLabel === "" ? "" : `Label(${frame.dirX})=${frame.dirXLabel},`} ${frame.dirY > 2 || frame.dirYLabel === "" ? "" : `Label(${frame.dirY})=${frame.dirYLabel},`}`;
-        if (frame.isPVImage && frame.spectralAxis?.valid) {
-            AST.set(frame.wcsInfo, spectralAxisSetting);
-        } else if (frame.isSwappedZ && frame.spectralAxis?.valid) {
-            AST.set(frame.wcsInfo, spectralAxisSetting + dirAxesSetting);
-        } else {
-            const formatStringX = this.props.overlaySettings.numbers.formatStringX;
-            const formatStyingY = this.props.overlaySettings.numbers.formatStringY;
-            const explicitSystem = this.props.overlaySettings.global.explicitSystem;
-            if (formatStringX !== undefined && formatStyingY !== undefined && explicitSystem !== undefined && OverlaySettings.Instance.isWcsCoordinates && frame.validWcs) {
-                AST.set(frame.wcsInfo, `Format(${frame.dirX})=${formatStringX}, Format(${frame.dirY})=${formatStyingY}, System=${explicitSystem},` + dirAxesSetting);
+            `${frame.spectralType && frame.spectralSystem ? `Label(${spectralAxisNumber})=[${frame.spectralSystem}] ${SPECTRAL_TYPE_STRING.get(frame.spectralType)},` : ""}`;
+        
+        // For cube view modes, let FrameStore handle the formatting (no override needed)
+        let cubeViewFormatSetting = "";
+        // Note: Proper DMS/HMS formatting is now handled by FrameStore.updateWcsSystem()
+        // Use cube view mode aware axis labels and coordinates
+        let dirAxesSetting = "";
+        if (isCubeViewMode) {
+            // In cube view mode, axis 1 is spatial, axis 2 is spectral (already handled above)
+            // For the spatial axis (axis 1 in 2D frame), always use dirXLabel which contains the correct spatial coordinate
+            const spatialAxisLabel = frame.dirXLabel;
+            if (spatialAxisLabel !== "") {
+                dirAxesSetting = `Label(1)=${spatialAxisLabel},`;
             }
+        } else {
+            // Normal XY mode
+            dirAxesSetting = `${frame.overlayDirX > 3 || frame.dirXLabel === "" ? "" : `Label(${frame.overlayDirX})=${frame.dirXLabel},`} ${frame.overlayDirY > 3 || frame.dirYLabel === "" ? "" : `Label(${frame.overlayDirY})=${frame.dirYLabel},`}`;
         }
+        
+            if (frame.isPVImage && frame.spectralAxis?.valid) {
+                AST.set(wcsInfo, spectralAxisSetting);
+            } else if ((frame.isSwappedZ || frame.cubeViewMode !== CARTA.CubeViewMode.VIEW_MODE_XY) && frame.spectralAxis?.valid) {
+                // SwappedZ and cube view modes (YZ/XZ) - use spectral axis settings with direction labels
+                AST.set(wcsInfo, cubeViewFormatSetting + spectralAxisSetting + dirAxesSetting);
+            } else {
+                const formatStringX = this.props.overlaySettings.numbers.formatStringX;
+                const formatStyingY = this.props.overlaySettings.numbers.formatStringY;
+                const explicitSystem = this.props.overlaySettings.global.explicitSystem;
+                if (formatStringX !== undefined && formatStyingY !== undefined && explicitSystem !== undefined && OverlaySettings.Instance.isWcsCoordinates && frame.validWcs) {
+                    // Use standard overlay settings - cube view WCS is handled at FrameStore level
+                    AST.set(wcsInfo, `Format(${frame.overlayDirX})=${formatStringX}, Format(${frame.overlayDirY})=${formatStyingY}, System=${explicitSystem},` + dirAxesSetting);
+                }
+            }
 
         const className = classNames("overlay-canvas", {docked: this.props.docked});
 
