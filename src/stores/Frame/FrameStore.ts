@@ -524,9 +524,19 @@ export class FrameStore {
                 let wcsVal: number;
                 
                 if (axis === 0) {
-                    wcsVal = this.dirX > this.dirY && wcs.x < 0 ? wcs.x + 2 * Math.PI : wcs.x;
+                    // Always normalize RA coordinates to 0-24h range (0 to 2π)
+                    if (coordinateLabel === "RA") {
+                        wcsVal = wcs.x < 0 ? wcs.x + 2 * Math.PI : wcs.x;
+                    } else {
+                        wcsVal = wcs.x;
+                    }
                 } else {
-                    wcsVal = this.dirX > this.dirY && wcs.y < 0 ? wcs.y + 2 * Math.PI : wcs.y;
+                    // Always normalize RA coordinates to 0-24h range (0 to 2π)
+                    if (coordinateLabel === "RA") {
+                        wcsVal = wcs.y < 0 ? wcs.y + 2 * Math.PI : wcs.y;
+                    } else {
+                        wcsVal = wcs.y;
+                    }
                 }
                 
                 const wcsString = AST.format(this.wcsInfo3D, wcsAxisIndex, wcsVal);
@@ -782,12 +792,37 @@ export class FrameStore {
             spectralString: ""
         };
 
-        if (this.isSwappedZ) {
+        if (this.cubeViewMode !== CARTA.CubeViewMode.VIEW_MODE_XY) {
+            // In cube view modes, show the slice axis WCS coordinate instead of spectral channel
+            const slicePosition = this.currentSlicePosition;
+            spectralInfo.channel = slicePosition;
+            
+            // Use the existing currentSliceAxisInfo logic which already handles WCS correctly
+            const sliceAxisInfo = this.currentSliceAxisInfo;
+            if (sliceAxisInfo && !sliceAxisInfo.includes("NaN")) {
+                // Extract the coordinate value from the existing axis info
+                // Format: "RA:\n123.456789" or "DEC:\n-12.345678" etc.
+                const lines = sliceAxisInfo.split('\n');
+                if (lines.length >= 2) {
+                    const coordinateType = lines[0].replace(':', '');
+                    const coordinateValue = lines[1];
+                    spectralInfo.spectralString = `LINEAR-${coordinateType}: ${coordinateValue}`;
+                } else {
+                    // Fallback to the full string if parsing fails
+                    spectralInfo.spectralString = sliceAxisInfo.replace(/\n/g, ': ');
+                }
+            } else {
+                // No WCS available, show pixel position
+                const axisName = this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_YZ ? "LINEAR-RA" : "LINEAR-DEC";
+                spectralInfo.spectralString = `${axisName}: ${slicePosition}`;
+            }
+        } else if (this.isSwappedZ) {
             // re-assign spectral channel index along x- or y-axis
             spectralInfo.channel = this.spectral === 1 ? this.cursorValue.position.x : this.cursorValue.position.y;
         }
 
-        if (this.frameInfo.fileInfoExtended.depth > 1) {
+        // Only show frequency/velocity info in normal XY mode
+        if (this.cubeViewMode === CARTA.CubeViewMode.VIEW_MODE_XY && this.frameInfo.fileInfoExtended.depth > 1) {
             // dummy variable to update velocity when the rest freq for spectral transform is changed
             /* eslint-disable @typescript-eslint/no-unused-vars */
             const spectralType = this.spectralAxis?.type;
@@ -2380,31 +2415,158 @@ export class FrameStore {
 
             const normalizedNeighbourhood = cursorNeighbourhood.map(pos => AST.normalizeCoordinates(this.wcsInfo, pos.x, pos.y));
 
-            while (precisionX < FrameStore.CursorInfoMaxPrecision && precisionY < FrameStore.CursorInfoMaxPrecision) {
-                let astString = new ASTSettingsString();
-                const overlaySettings = AppStore.Instance.overlaySettings;
-                astString.add(`Format(${this.dirX})`, this.isNormalImage ? overlaySettings.numbers.cursorFormatStringX(precisionX) : undefined);
-                astString.add(`Format(${this.dirY})`, this.isNormalImage ? overlaySettings.numbers.cursorFormatStringY(precisionY) : undefined);
-                astString.add("System", this.isNormalImage ? overlaySettings.global.explicitSystem : "cartesian");
+            // Handle formatting differently for cube view vs normal mode
+            if (this.isNormalImage) {
+                // Normal mode: use the standard coordinate formatting
+                while (precisionX < FrameStore.CursorInfoMaxPrecision && precisionY < FrameStore.CursorInfoMaxPrecision) {
+                    let astString = new ASTSettingsString();
+                    const overlaySettings = AppStore.Instance.overlaySettings;
+                    astString.add(`Format(${this.dirX})`, overlaySettings.numbers.cursorFormatStringX(precisionX));
+                    astString.add(`Format(${this.dirY})`, overlaySettings.numbers.cursorFormatStringY(precisionY));
+                    astString.add("System", overlaySettings.global.explicitSystem);
 
-                let formattedNeighbourhood = normalizedNeighbourhood.map(pos => AST.getFormattedCoordinates(this.wcsInfo, pos.x, pos.y, astString.toString(), true));
-                let [p, n1, n2] = formattedNeighbourhood;
-                if (!p.x || !p.y || p.x === "<bad>" || p.y === "<bad>") {
+                    let formattedNeighbourhood = normalizedNeighbourhood.map(pos => AST.getFormattedCoordinates(this.wcsInfo, pos.x, pos.y, astString.toString(), true));
+                    let [p, n1, n2] = formattedNeighbourhood;
+                    if (!p.x || !p.y || p.x === "<bad>" || p.y === "<bad>") {
+                        cursorPosFormatted = null;
+                        break;
+                    }
+
+                    if (p.x !== n1.x && p.x !== n2.x && p.y !== n1.y && p.y !== n2.y) {
+                        cursorPosFormatted = {x: p.x, y: p.y};
+                        break;
+                    }
+
+                    if (p.x === n1.x || p.x === n2.x) {
+                        precisionX += 1;
+                    }
+
+                    if (p.y === n1.y || p.y === n2.y) {
+                        precisionY += 1;
+                    }
+                }
+            } else if (this.wcsInfo3D) {
+                // Cube view mode: use same approach as slice coordinates to avoid compound frame issues
+                try {
+                    const overlaySettings = AppStore.Instance.overlaySettings;
+                    
+                    // Transform pixel coordinates to 3D world coordinates
+                    // Map screen coordinates to 3D coordinates based on cube view mode
+                    const axisConfig = getAxisConfig(this.cubeViewMode);
+                    let x3D: number, y3D: number, z3D: number;
+                    
+                    // Initialize 3D coordinates based on cube view mode
+                    if (axisConfig.x === 0 && axisConfig.y === 1) { // XY mode (should not reach here)
+                        x3D = cursorPosImageSpace.x;
+                        y3D = cursorPosImageSpace.y;
+                        z3D = this.requiredChannel;
+                    } else if (axisConfig.x === 1 && axisConfig.y === 2) { // YZ mode (X=Y, Y=Z)
+                        x3D = this.currentSlicePosition; // Fixed X position
+                        y3D = cursorPosImageSpace.x; // Screen X maps to world Y
+                        z3D = cursorPosImageSpace.y; // Screen Y maps to world Z
+                    } else if (axisConfig.x === 0 && axisConfig.y === 2) { // XZ mode (X=X, Y=Z)
+                        x3D = cursorPosImageSpace.x; // Screen X maps to world X
+                        y3D = this.currentSlicePosition; // Fixed Y position
+                        z3D = cursorPosImageSpace.y; // Screen Y maps to world Z
+                    } else {
+                        // Fallback
+                        x3D = cursorPosImageSpace.x;
+                        y3D = cursorPosImageSpace.y;
+                        z3D = this.requiredChannel;
+                    }
+                    
+                    const wcs3D = AST.transform3DPoint(this.wcsInfo3D, x3D, y3D, z3D, true);
+                    
+                    // In cube view mode, determine which world coordinate axes correspond to screen X and Y
+                    // and apply appropriate formatting
+                    let xAxisIndex: number, yAxisIndex: number;
+                    let xWorldValue: number, yWorldValue: number;
+                    let xFormat: string, yFormat: string;
+                    
+                    // Use the axisConfig already defined above
+                    
+                    // Map screen coordinates to world coordinates based on cube view mode
+                    if (axisConfig.x === 0) { // Screen X shows world X (RA)
+                        xAxisIndex = this.dirX;
+                        // Always normalize RA to 0-24h range (0 to 2π)
+                        xWorldValue = wcs3D.x < 0 ? wcs3D.x + 2 * Math.PI : wcs3D.x;
+                        xFormat = overlaySettings.numbers.formatTypeX;
+                    } else if (axisConfig.x === 1) { // Screen X shows world Y (DEC) 
+                        xAxisIndex = this.dirY;
+                        xWorldValue = wcs3D.y;
+                        xFormat = overlaySettings.numbers.formatTypeY;
+                    } else { // Screen X shows world Z (Velocity)
+                        xAxisIndex = this.spectral;
+                        xWorldValue = wcs3D.z;
+                        xFormat = null; // Mark as velocity for special handling
+                    }
+                    
+                    if (axisConfig.y === 0) { // Screen Y shows world X (RA)
+                        yAxisIndex = this.dirX;
+                        // Always normalize RA to 0-24h range (0 to 2π)
+                        yWorldValue = wcs3D.x < 0 ? wcs3D.x + 2 * Math.PI : wcs3D.x;
+                        yFormat = overlaySettings.numbers.formatTypeX;
+                    } else if (axisConfig.y === 1) { // Screen Y shows world Y (DEC)
+                        yAxisIndex = this.dirY;
+                        yWorldValue = wcs3D.y;
+                        yFormat = overlaySettings.numbers.formatTypeY;
+                    } else { // Screen Y shows world Z (Velocity)
+                        yAxisIndex = this.spectral;
+                        yWorldValue = wcs3D.z;
+                        yFormat = null; // Mark as velocity for special handling
+                    }
+                    
+                    // Format coordinates - use toFixed for velocity, AST.format for RA/DEC
+                    let xFormatted: string, yFormatted: string;
+                    
+                    if (xFormat === null) {
+                        // Velocity: format as plain number like in spectralInfo
+                        xFormatted = toFixed(xWorldValue, 4);
+                    } else {
+                        // RA/DEC: use AST formatting
+                        AST.set(this.wcsInfo3D, `Format(${xAxisIndex})=${xFormat}.${WCS_PRECISION}`);
+                        xFormatted = AST.format(this.wcsInfo3D, xAxisIndex, xWorldValue);
+                    }
+                    
+                    if (yFormat === null) {
+                        // Velocity: format as plain number like in spectralInfo
+                        yFormatted = toFixed(yWorldValue, 4);
+                    } else {
+                        // RA/DEC: use AST formatting
+                        AST.set(this.wcsInfo3D, `Format(${yAxisIndex})=${yFormat}.${WCS_PRECISION}`);
+                        yFormatted = AST.format(this.wcsInfo3D, yAxisIndex, yWorldValue);
+                    }
+                    
+                    cursorPosFormatted = {x: xFormatted, y: yFormatted};
+                } catch (error) {
+                    console.warn("Failed to format cursor coordinates in cube view mode:", error);
                     cursorPosFormatted = null;
-                    break;
                 }
+            } else {
+                // Fallback: use cartesian coordinates
+                while (precisionX < FrameStore.CursorInfoMaxPrecision && precisionY < FrameStore.CursorInfoMaxPrecision) {
+                    let astString = new ASTSettingsString();
+                    astString.add("System", "cartesian");
 
-                if (p.x !== n1.x && p.x !== n2.x && p.y !== n1.y && p.y !== n2.y) {
-                    cursorPosFormatted = {x: p.x, y: p.y};
-                    break;
-                }
+                    let formattedNeighbourhood = normalizedNeighbourhood.map(pos => AST.getFormattedCoordinates(this.wcsInfo, pos.x, pos.y, astString.toString(), true));
+                    let [p, n1, n2] = formattedNeighbourhood;
+                    if (!p.x || !p.y || p.x === "<bad>" || p.y === "<bad>") {
+                        cursorPosFormatted = null;
+                        break;
+                    }
 
-                if (p.x === n1.x || p.x === n2.x) {
-                    precisionX += 1;
-                }
+                    if (p.x !== n1.x && p.x !== n2.x && p.y !== n1.y && p.y !== n2.y) {
+                        cursorPosFormatted = {x: p.x, y: p.y};
+                        break;
+                    }
 
-                if (p.y === n1.y || p.y === n2.y) {
-                    precisionY += 1;
+                    if (p.x === n1.x || p.x === n2.x) {
+                        precisionX += 1;
+                    }
+
+                    if (p.y === n1.y || p.y === n2.y) {
+                        precisionY += 1;
+                    }
                 }
             }
         }

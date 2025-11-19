@@ -48,10 +48,15 @@ export class RegionSetStore {
     public updateCursorRegionPosition = (pos: Point2D) => {
         if (pos && this.regions.length > 0) {
             const cursorRegion = this.regions[0];
+            
+            // In cube view modes, the backend already knows the cube view mode and current slice
+            // We should send the 2D screen coordinates as-is, and let the backend handle
+            // the translation based on the current cube view mode and slice position
+            const transformedPos = {x: Math.round(pos.x), y: Math.round(pos.y)};
+            
             // Need to avoid redundant update (position not changed), backend may not reply to redundant requests.
-            const roundedPos = {x: Math.round(pos.x), y: Math.round(pos.y)};
-            if (cursorRegion?.regionId === CURSOR_REGION_ID && (!this.isHoverImage || cursorRegion.center?.x !== roundedPos.x || cursorRegion.center?.y !== roundedPos.y)) {
-                cursorRegion.setCenter(roundedPos);
+            if (cursorRegion?.regionId === CURSOR_REGION_ID && (!this.isHoverImage || cursorRegion.center?.x !== transformedPos.x || cursorRegion.center?.y !== transformedPos.y)) {
+                cursorRegion.setCenter(transformedPos);
                 this.setIsHover(true);
             }
         }

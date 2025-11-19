@@ -7,6 +7,7 @@ import {observer} from "mobx-react";
 
 import {ImageItem, ImageType, SPECTRAL_TYPE_STRING} from "models";
 import {AppStore, OverlaySettings, OverlayStore, PreferenceStore} from "stores";
+import {WCS_PRECISION} from "stores/Frame";
 
 import "./OverlayComponent.scss";
 
@@ -237,9 +238,8 @@ export class OverlayComponent extends React.Component<OverlayComponentProps> {
             `${frame.restFreqStore.restFreqInHz ? `RestFreq=${frame.restFreqStore.restFreqInHz} Hz,` : ""}` +
             `${frame.spectralType && frame.spectralSystem ? `Label(${spectralAxisNumber})=[${frame.spectralSystem}] ${SPECTRAL_TYPE_STRING.get(frame.spectralType)},` : ""}`;
         
-        // For cube view modes, let FrameStore handle the formatting (no override needed)
+        // For cube view modes, leave formatting to default since LINEAR coordinates don't support HMS/DMS
         let cubeViewFormatSetting = "";
-        // Note: Proper DMS/HMS formatting is now handled by FrameStore.updateWcsSystem()
         // Use cube view mode aware axis labels and coordinates
         let dirAxesSetting = "";
         if (isCubeViewMode) {
