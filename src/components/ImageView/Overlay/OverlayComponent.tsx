@@ -7,7 +7,6 @@ import {observer} from "mobx-react";
 
 import {ImageItem, ImageType, SPECTRAL_TYPE_STRING} from "models";
 import {AppStore, OverlaySettings, OverlayStore, PreferenceStore} from "stores";
-import {WCS_PRECISION} from "stores/Frame";
 
 import "./OverlayComponent.scss";
 

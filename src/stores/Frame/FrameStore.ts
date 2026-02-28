@@ -2390,10 +2390,6 @@ export class FrameStore {
     };
 
     public getCursorInfo(cursorPosImageSpace: Point2D) {
-        // Essential debug info only for cube view modes
-        if (this.cubeViewMode !== CARTA.CubeViewMode.VIEW_MODE_XY) {
-            console.log(`[DEBUG] getCursorInfo: cubeViewMode=${this.cubeViewMode}, dirX=${this.dirX}, dirY=${this.dirY}, spectral=${this.spectral}`);
-        }
         let cursorPosWCS, cursorPosFormatted;
         let precisionX = 0;
         let precisionY = 0;
@@ -2411,7 +2407,6 @@ export class FrameStore {
             const cursorNeighbourhood = offsetBlock.map(offset => transformPoint(this.wcsInfo, {x: cursorPosImageSpace.x + offset[0], y: cursorPosImageSpace.y + offset[1]}));
 
             cursorPosWCS = cursorNeighbourhood[0];
-            console.log(`[DEBUG] getCursorInfo: cursorPosWCS:`, cursorPosWCS);
 
             const normalizedNeighbourhood = cursorNeighbourhood.map(pos => AST.normalizeCoordinates(this.wcsInfo, pos.x, pos.y));
 
